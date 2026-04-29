@@ -298,6 +298,35 @@ export async function fetchQualitySignals(owner, repo, token) {
   return { signals, scoreItems, score, hasTests }
 }
 
+export async function fetchTestFiles(owner, repo, token) {
+  // Cherche des fichiers de test réels dans le repo via l'API code search
+  const queries = [
+    `repo:${owner}/${repo}+filename:.test.`,   // *.test.js / *.test.ts / etc.
+    `repo:${owner}/${repo}+filename:.spec.`,    // *.spec.js / *.spec.ts / etc.
+    `repo:${owner}/${repo}+filename:_test.go`,  // Go
+    `repo:${owner}/${repo}+filename:test_.py`,  // Python
+    `repo:${owner}/${repo}+filename:conftest.py`,
+  ]
+
+  const results = await Promise.all(
+    queries.map(q =>
+      safe(get(`${BASE}/search/code?q=${q}&per_page=1`, token), { total_count: 0 })
+    )
+  )
+
+  const totalFiles = results.reduce((sum, r) => sum + (r.data?.total_count || 0), 0)
+
+  // Récupère un échantillon de fichiers trouvés pour afficher des exemples
+  const firstResult = results.find(r => (r.data?.total_count || 0) > 0)
+  const examples = firstResult?.data?.items?.map(f => f.path) || []
+
+  return {
+    count: totalFiles,
+    hasRealTests: totalFiles > 0,
+    examples,
+  }
+}
+
 export async function fetchMilestones(owner, repo, token) {
   const [open, closed] = await Promise.all([
     getPaginated(`${BASE}/repos/${owner}/${repo}/milestones?state=open&sort=due_on&direction=asc`, token, 1),

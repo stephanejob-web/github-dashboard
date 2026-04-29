@@ -14,6 +14,7 @@ import {
   fetchWorkflowRuns,
   fetchPRReviewComments,
   fetchQualitySignals,
+  fetchTestFiles,
   safe,
 } from '../api/github'
 
@@ -275,6 +276,7 @@ export function useGitHubData() {
         workflowRunsResult,
         reviewCommentsResult,
         qualityResult,
+        testFilesResult,
       ] = await Promise.all([
         safe(fetchContributors(owner, repo, token), []),
         safe(fetchCollaborators(owner, repo, token), []),
@@ -287,6 +289,7 @@ export function useGitHubData() {
         safe(fetchWorkflowRuns(owner, repo, token), []),
         safe(fetchPRReviewComments(owner, repo, token), []),
         safe(fetchQualitySignals(owner, repo, token), { signals: {}, scoreItems: [], score: 0, hasTests: false }),
+        safe(fetchTestFiles(owner, repo, token), { count: 0, hasRealTests: false, examples: [] }),
       ])
 
       if (loadId !== loadIdRef.current) return
@@ -302,6 +305,7 @@ export function useGitHubData() {
       const workflowRuns   = workflowRunsResult.data
       const reviewComments = reviewCommentsResult.data
       const quality        = qualityResult.data
+      const testFiles      = testFilesResult.data
 
       // Collect warnings — only for unexpected failures, not known API limitations
       const warnings = []
@@ -536,6 +540,7 @@ export function useGitHubData() {
         issuesAssignment: { assigned: issuesAssigned, unassigned: issuesUnassigned },
         ci: { runs: ciRuns.slice(0, 10), workflows: ciWorkflows, successRate: ciSuccessRate },
         quality,
+        testFiles,
         devTestActivity,
       })
     } catch (e) {

@@ -150,7 +150,7 @@ export default function Dashboard({ data, owner, repo, onBack, token, onRefresh 
     prByMonth, prs, issues, languages, branches, branchAnalysis, prAnalysis, streak, mostActiveDay,
     daysSinceLastCommit, avgCommitsPerWeek, commitLint, commitLintByAuthor,
     milestones = [], prHealth, topReviewers = [], busFactor, busFactorList = [], labelDist = [], issuesAssignment, ci,
-    quality, devTestActivity = [],
+    quality, testFiles, devTestActivity = [],
   } = data
 
   const topContributor = contributors[0]
