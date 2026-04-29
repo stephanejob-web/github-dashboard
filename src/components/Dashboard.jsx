@@ -14,6 +14,12 @@ import DevTracker from './DevTracker'
 import Podium from './Podium'
 import CommitConventions from './CommitConventions'
 import WorkflowPanel from './WorkflowPanel'
+import SprintPanel from './SprintPanel'
+import PRHealthPanel from './PRHealthPanel'
+import RiskPanel from './RiskPanel'
+import CIPanel from './CIPanel'
+import QualityPanel from './QualityPanel'
+import SMOverview from './SMOverview'
 import { clearCache } from '../api/github'
 
 function BgGlow() {
@@ -140,9 +146,11 @@ function SectionHeader({ label, title, sub }) {
 export default function Dashboard({ data, owner, repo, onBack, token, onRefresh }) {
   const {
     info, contributors, commits, dailyActivity, weeklyActivity, monthlyActivity, commitsByDay, authorCommits,
-    collaboratorsError,
+    warnings = [],
     prByMonth, prs, issues, languages, branches, branchAnalysis, prAnalysis, streak, mostActiveDay,
     daysSinceLastCommit, avgCommitsPerWeek, commitLint, commitLintByAuthor,
+    milestones = [], prHealth, topReviewers = [], busFactor, busFactorList = [], labelDist = [], issuesAssignment, ci,
+    quality, devTestActivity = [],
   } = data
 
   const topContributor = contributors[0]
@@ -228,7 +236,7 @@ export default function Dashboard({ data, owner, repo, onBack, token, onRefresh 
 
           {/* Repo description */}
           {info.description && (
-            <div className="fade-up" style={{ marginBottom: 36 }}>
+            <div className="fade-up" style={{ marginBottom: warnings.length ? 16 : 36 }}>
               <p style={{
                 color: '#4a5568', fontSize: 14, lineHeight: 1.6,
                 padding: '12px 18px',
@@ -239,6 +247,45 @@ export default function Dashboard({ data, owner, repo, onBack, token, onRefresh 
               }}>{info.description}</p>
             </div>
           )}
+
+          {/* Warnings endpoints partiels */}
+          {warnings.length > 0 && (
+            <div className="fade-up" style={{
+              marginBottom: 28, padding: '12px 16px', borderRadius: 14,
+              background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.2)',
+              display: 'flex', alignItems: 'flex-start', gap: 10,
+            }}>
+              <span style={{ fontSize: 14, flexShrink: 0 }}>⚠</span>
+              <div>
+                <p style={{ fontSize: 12, fontWeight: 700, color: '#fbbf24', marginBottom: 4 }}>
+                  Données partielles — certains endpoints GitHub ont échoué (repo très large ou token requis)
+                </p>
+                <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {warnings.map((w, i) => (
+                    <li key={i} style={{ fontSize: 11, color: '#92400e' }}>· {w}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          )}
+
+          {/* ══ VUE SCRUM MASTER ══ */}
+          <div style={{ marginBottom: 32 }}>
+            <SectionHeader label="Scrum Master · Vue principale" title="Métriques clés du projet" />
+            <SMOverview
+              authorCommits={authorCommits}
+              commitLintByAuthor={commitLintByAuthor}
+              topReviewers={topReviewers}
+              devTestActivity={devTestActivity}
+              prHealth={prHealth}
+              busFactor={busFactor ?? 0}
+              ci={ci}
+              quality={quality}
+              commitLint={commitLint}
+              issuesAssignment={issuesAssignment ?? { assigned: 0, unassigned: 0 }}
+              milestones={milestones}
+            />
+          </div>
 
           {/* ── Stat cards ── */}
           <div style={{ marginBottom: 32 }}>
@@ -287,10 +334,39 @@ export default function Dashboard({ data, owner, repo, onBack, token, onRefresh 
             <WorkflowPanel branchAnalysis={branchAnalysis} prAnalysis={prAnalysis} />
           </div>
 
+          {/* ── Milestones / Sprints ── */}
+          <div style={{ marginBottom: 24 }}>
+            <SectionHeader label="Scrum · Planning" title="Sprints & Milestones" />
+            <SprintPanel milestones={milestones} />
+          </div>
+
+          {/* ── PR Health + Risk ── */}
+          <div style={{ marginBottom: 24 }}>
+            <SectionHeader label="Qualité · Scrum Master" title="Santé des PRs & Risques" />
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(340px,1fr))', gap: 20 }}>
+              {prHealth && <PRHealthPanel prHealth={prHealth} topReviewers={topReviewers} />}
+              <RiskPanel busFactor={busFactor ?? 0} busFactorList={busFactorList} labelDist={labelDist} issuesAssignment={issuesAssignment ?? { assigned: 0, unassigned: 0 }} />
+            </div>
+          </div>
+
+          {/* ── Qualité & bonnes pratiques ── */}
+          <div style={{ marginBottom: 24 }}>
+            <SectionHeader label="Qualité · Scrum Master" title="Normes & Bonnes pratiques" sub={quality ? `Score : ${quality.score}/100` : ''} />
+            <QualityPanel quality={quality} devTestActivity={devTestActivity} />
+          </div>
+
+          {/* ── CI / GitHub Actions ── */}
+          <div style={{ marginBottom: 24 }}>
+            <SectionHeader label="Automatisation" title="CI / CD · GitHub Actions" />
+            <div style={{ maxWidth: 680 }}>
+              <CIPanel ci={ci} />
+            </div>
+          </div>
+
           {/* ── Dev tracker ── */}
           <div>
             <SectionHeader label="Analyse individuelle" title="Suivi des développeurs" />
-            <DevTracker authorCommits={authorCommits} collaboratorsError={collaboratorsError} token={token} />
+            <DevTracker authorCommits={authorCommits} collaboratorsError={warnings.length ? warnings.join(' | ') : null} token={token} />
           </div>
 
           <p style={{
