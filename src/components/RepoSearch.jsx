@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Search, Key, GitBranch, Zap, GitCommit, Users,
-  TrendingUp, ShieldCheck, ArrowRight, CheckCircle,
+  TrendingUp, ShieldCheck, ArrowRight, CheckCircle, Star, Code2,
 } from 'lucide-react'
-import { getRateLimit } from '../api/github'
+import { getRateLimit, searchRepos } from '../api/github'
 
 const LAST_SEARCH_KEY = 'gh_last_search'
 const TOKEN_KEY = 'gh_token'
@@ -142,6 +142,115 @@ function getLastSearch() {
   } catch { return '' }
 }
 
+/* ─── Autocomplete Dropdown ─────────────────────────────────── */
+const LANG_COLORS = {
+  JavaScript: '#f1e05a', TypeScript: '#3178c6', Python: '#3572A5',
+  Go: '#00ADD8', Rust: '#dea584', Java: '#b07219', 'C++': '#f34b7d',
+  C: '#555555', Ruby: '#701516', PHP: '#4F5D95', Swift: '#F05138',
+  Kotlin: '#A97BFF', Shell: '#89e051', HTML: '#e34c26', CSS: '#563d7c',
+  Dart: '#00B4AB', Vue: '#41b883', Nix: '#7e7eff',
+}
+
+function LangDot({ lang }) {
+  const color = LANG_COLORS[lang] || '#718096'
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+      <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />
+      <span style={{ fontSize: 10, color: '#718096' }}>{lang}</span>
+    </span>
+  )
+}
+
+function formatStars(n) {
+  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`
+  return String(n)
+}
+
+function SearchDropdown({ results, loading, activeIdx, onSelect, onMouseEnter }) {
+  if (!results && !loading) return null
+
+  return (
+    <div style={{
+      position: 'absolute', top: 'calc(100% + 6px)', left: 0, right: 0,
+      background: '#0f1629', border: '1px solid rgba(134,140,255,0.25)',
+      borderRadius: 14, boxShadow: '0 20px 60px rgba(0,0,0,0.6), 0 0 0 1px rgba(134,140,255,0.1)',
+      zIndex: 100, overflow: 'hidden',
+      maxHeight: 420, overflowY: 'auto',
+    }}>
+      {loading && (
+        <div style={{ padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{
+            width: 14, height: 14, borderRadius: '50%',
+            border: '2px solid rgba(134,140,255,0.2)', borderTopColor: '#868cff',
+            animation: 'spin 0.7s linear infinite', display: 'inline-block', flexShrink: 0,
+          }} />
+          <span style={{ fontSize: 12, color: '#4a5568' }}>Recherche en cours…</span>
+        </div>
+      )}
+      {!loading && results?.length === 0 && (
+        <div style={{ padding: '14px 16px', fontSize: 12, color: '#4a5568', textAlign: 'center' }}>
+          Aucun résultat trouvé
+        </div>
+      )}
+      {!loading && results?.map((repo, i) => (
+        <div
+          key={repo.full_name}
+          onMouseDown={e => { e.preventDefault(); onSelect(repo) }}
+          onMouseEnter={() => onMouseEnter(i)}
+          style={{
+            padding: '12px 16px', cursor: 'pointer', transition: 'background 0.15s',
+            background: i === activeIdx ? 'rgba(134,140,255,0.1)' : 'transparent',
+            borderBottom: i < results.length - 1 ? '1px solid rgba(255,255,255,0.04)' : 'none',
+            display: 'flex', flexDirection: 'column', gap: 5,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
+              {repo.owner?.avatar_url && (
+                <img
+                  src={repo.owner.avatar_url}
+                  alt=""
+                  style={{ width: 18, height: 18, borderRadius: '50%', flexShrink: 0, border: '1px solid rgba(255,255,255,0.1)' }}
+                />
+              )}
+              <span style={{ fontSize: 13, fontWeight: 700, color: i === activeIdx ? '#868cff' : '#e2e8f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {repo.full_name}
+              </span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+              <Star size={10} color="#fbbf24" />
+              <span style={{ fontSize: 10, fontWeight: 700, color: '#fbbf24' }}>{formatStars(repo.stargazers_count)}</span>
+            </div>
+          </div>
+          {repo.description && (
+            <p style={{
+              fontSize: 11, color: '#718096', lineHeight: 1.4,
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>
+              {repo.description}
+            </p>
+          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            {repo.language && <LangDot lang={repo.language} />}
+            {repo.topics?.slice(0, 3).map(t => (
+              <span key={t} style={{
+                fontSize: 9, padding: '1px 6px', borderRadius: 99, fontWeight: 600,
+                background: 'rgba(134,140,255,0.12)', color: '#868cff', border: '1px solid rgba(134,140,255,0.2)',
+              }}>{t}</span>
+            ))}
+          </div>
+        </div>
+      ))}
+      {!loading && results?.length > 0 && (
+        <div style={{ padding: '8px 16px', borderTop: '1px solid rgba(255,255,255,0.04)', display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Code2 size={10} color="#4a5568" />
+          <span style={{ fontSize: 10, color: '#4a5568' }}>↑↓ naviguer · Entrée sélectionner · Échap fermer</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /* ─── Composant principal ───────────────────────────────────── */
 export default function RepoSearch({ onSearch, loading }) {
   const [repo, setRepo] = useState(getLastSearch)
@@ -149,6 +258,71 @@ export default function RepoSearch({ onSearch, loading }) {
   const [showToken, setShowToken] = useState(() => !!getSavedToken())
   const [tokenSaved, setTokenSaved] = useState(() => !!getSavedToken())
   const [inputError, setInputError] = useState('')
+
+  const [suggestions, setSuggestions] = useState(null)
+  const [sugLoading, setSugLoading] = useState(false)
+  const [showDropdown, setShowDropdown] = useState(false)
+  const [activeIdx, setActiveIdx] = useState(-1)
+  const debounceRef = useRef(null)
+  const inputRef = useRef(null)
+
+  function handleRepoChange(val) {
+    setRepo(val)
+    setInputError('')
+    setActiveIdx(-1)
+
+    // Si l'utilisateur tape owner/repo exact, pas besoin d'autocomplete
+    if (val.includes('/') && val.split('/')[1]) {
+      setShowDropdown(false)
+      setSuggestions(null)
+      return
+    }
+
+    clearTimeout(debounceRef.current)
+    if (val.trim().length < 2) {
+      setSuggestions(null)
+      setShowDropdown(false)
+      return
+    }
+
+    setSugLoading(true)
+    setShowDropdown(true)
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const results = await searchRepos(val, token.trim() || null)
+        setSuggestions(results)
+      } catch {
+        setSuggestions([])
+      } finally {
+        setSugLoading(false)
+      }
+    }, 350)
+  }
+
+  function handleSelectSuggestion(r) {
+    setRepo(r.full_name)
+    setSuggestions(null)
+    setShowDropdown(false)
+    setActiveIdx(-1)
+    setInputError('')
+    inputRef.current?.focus()
+  }
+
+  function handleInputKeyDown(e) {
+    if (!showDropdown || !suggestions?.length) return
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setActiveIdx(i => Math.min(i + 1, suggestions.length - 1))
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setActiveIdx(i => Math.max(i - 1, -1))
+    } else if (e.key === 'Enter' && activeIdx >= 0) {
+      e.preventDefault()
+      handleSelectSuggestion(suggestions[activeIdx])
+    } else if (e.key === 'Escape') {
+      setShowDropdown(false)
+    }
+  }
 
   function handleSubmit(e) {
     e.preventDefault()
@@ -302,22 +476,36 @@ export default function RepoSearch({ onSearch, loading }) {
                     Repository
                   </label>
                   <div style={{ position: 'relative' }}>
-                    <Search size={15} style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: '#4a5568', pointerEvents: 'none' }} />
+                    <Search size={15} style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: '#4a5568', pointerEvents: 'none', zIndex: 1 }} />
                     <input
+                      ref={inputRef}
                       type="text"
                       value={repo}
-                      onChange={e => { setRepo(e.target.value); setInputError('') }}
-                      placeholder="owner/repository"
+                      onChange={e => handleRepoChange(e.target.value)}
+                      onKeyDown={handleInputKeyDown}
+                      onFocus={() => {
+                        if (suggestions?.length) setShowDropdown(true)
+                      }}
+                      onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
+                      placeholder="Tapez un mot-clé ou owner/repo…"
                       required
+                      autoComplete="off"
                       style={{
                         width: '100%', paddingLeft: 42, paddingRight: 16, paddingTop: 13, paddingBottom: 13,
                         borderRadius: 12, fontSize: 14, color: '#e2e8f0', outline: 'none',
-                        background: 'rgba(255,255,255,0.04)', border: `1px solid ${inputError ? 'rgba(239,68,68,0.5)' : 'rgba(255,255,255,0.09)'}`,
-                        transition: 'border-color 0.2s',
+                        background: 'rgba(255,255,255,0.04)', border: `1px solid ${inputError ? 'rgba(239,68,68,0.5)' : showDropdown ? 'rgba(134,140,255,0.5)' : 'rgba(255,255,255,0.09)'}`,
+                        transition: 'border-color 0.2s', boxSizing: 'border-box',
                       }}
-                      onFocus={e => !inputError && (e.target.style.borderColor = 'rgba(134,140,255,0.5)')}
-                      onBlur={e => !inputError && (e.target.style.borderColor = 'rgba(255,255,255,0.09)')}
                     />
+                    {showDropdown && (
+                      <SearchDropdown
+                        results={suggestions}
+                        loading={sugLoading}
+                        activeIdx={activeIdx}
+                        onSelect={handleSelectSuggestion}
+                        onMouseEnter={setActiveIdx}
+                      />
+                    )}
                   </div>
                   {inputError && (
                     <p style={{ fontSize: 11, color: '#fca5a5', marginTop: 6, paddingLeft: 4 }}>⚠ {inputError}</p>

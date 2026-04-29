@@ -10,6 +10,11 @@ import {
   fetchIssues,
   fetchLanguages,
   fetchBranches,
+  fetchMilestones,
+  fetchWorkflowRuns,
+  fetchPRReviewComments,
+  fetchQualitySignals,
+  safe,
 } from '../api/github'
 
 function computeStreak(commits) {
@@ -55,9 +60,8 @@ function computeDailyActivity(commits) {
 
 function computeWeeklyActivity(commits) {
   const now = new Date()
-  // Aligner sur le lundi de la semaine courante
   const startOfToday = new Date(now); startOfToday.setHours(0,0,0,0)
-  const dayOfWeek = (startOfToday.getDay() + 6) % 7 // 0=lun
+  const dayOfWeek = (startOfToday.getDay() + 6) % 7
   const monday = new Date(startOfToday)
   monday.setDate(monday.getDate() - dayOfWeek)
 
@@ -118,7 +122,6 @@ function computeContributorActivity(commits, prsOpen, prsClosed, issuesOpen, iss
     if (date > a.lastCommit) a.lastCommit = date
   })
 
-  // PRs per author
   const allPRs = [...(prsOpen || []), ...(prsClosed || [])]
   const prMap = {}
   allPRs.forEach(pr => {
@@ -126,7 +129,6 @@ function computeContributorActivity(commits, prsOpen, prsClosed, issuesOpen, iss
     if (login) prMap[login] = (prMap[login] || 0) + 1
   })
 
-  // Issues per author
   const allIssues = [
     ...(issuesOpen || []).filter(i => !i.pull_request),
     ...(issuesClosed || []).filter(i => !i.pull_request),
@@ -146,15 +148,13 @@ function computeContributorActivity(commits, prsOpen, prsClosed, issuesOpen, iss
     const peakDayIdx = a.dayOfWeek.indexOf(Math.max(...a.dayOfWeek))
     const peakHour = a.hours.indexOf(Math.max(...a.hours))
 
-    // Time-of-day buckets
     const timeSlots = {
-      nuit:    a.hours.slice(0,6).reduce((s,v)=>s+v,0),
-      matin:   a.hours.slice(6,12).reduce((s,v)=>s+v,0),
+      nuit:      a.hours.slice(0,6).reduce((s,v)=>s+v,0),
+      matin:     a.hours.slice(6,12).reduce((s,v)=>s+v,0),
       apresmidi: a.hours.slice(12,18).reduce((s,v)=>s+v,0),
-      soir:    a.hours.slice(18,24).reduce((s,v)=>s+v,0),
+      soir:      a.hours.slice(18,24).reduce((s,v)=>s+v,0),
     }
 
-    // Weekly commits (last 12 weeks)
     const now = Date.now()
     const weekMs = 7 * 24 * 60 * 60 * 1000
     const weeklyCommits = Array.from({ length: 12 }, (_, i) => {
@@ -165,14 +165,12 @@ function computeContributorActivity(commits, prsOpen, prsClosed, issuesOpen, iss
       }).length
     })
 
-    // Heatmap: last 16 weeks (112 days)
     const heatmapDays = Array.from({ length: 112 }, (_, i) => {
       const d = new Date(now - (111 - i) * 86400000)
       const key = d.toISOString().slice(0, 10)
       return { date: key, count: a.heatmap[key] || 0 }
     })
 
-    // Streak
     let streak = 0
     const sortedDays = [...a.daySet].sort().reverse()
     let cur = new Date(); cur.setHours(0,0,0,0)
@@ -206,28 +204,23 @@ function computeContributorActivity(commits, prsOpen, prsClosed, issuesOpen, iss
   }).sort((a, b) => b.commits - a.commits)
 }
 
-// allMembers = fusion contributors (vrais totaux GitHub) + collaborators
 function mergeWithCollaborators(activityList, allMembers) {
   const result = [...activityList]
 
   allMembers.forEach(member => {
     const existing = result.find(a => a.name === member.login)
     if (existing) {
-      // On a de l'activité analysée pour ce membre.
-      // Si GitHub dit qu'il a plus de commits que ce qu'on a chargé, on corrige le total affiché.
       if (member.contributions > existing.commits) {
         existing.commits = member.contributions
-        existing.partialData = true // signale que l'analyse détaillée est incomplète
+        existing.partialData = true
       }
     } else {
-      // Membre présent dans contributors ou collaborators mais absent de notre analyse
-      // (commits au-delà des pages chargées, ou aucun commit du tout)
       const hasCommits = member.contributions > 0
       result.push({
         name: member.login,
         avatar: member.avatar_url,
         commits: member.contributions || 0,
-        partialData: hasCommits, // a des commits mais hors de notre fenêtre d'analyse
+        partialData: hasCommits,
         activeDays: 0,
         firstCommit: null,
         lastCommit: null,
@@ -248,7 +241,6 @@ function mergeWithCollaborators(activityList, allMembers) {
     }
   })
 
-  // Tri final : d'abord par commits décroissants
   return result.sort((a, b) => b.commits - a.commits)
 }
 
@@ -263,31 +255,84 @@ export function useGitHubData() {
     setLoading(true)
     setError(null)
     setData(null)
-    try {
-      const [info, contributors, collaboratorsResult, commits, prs, issues, languages, branches] =
-        await Promise.all([
-          fetchRepoInfo(owner, repo, token),
-          fetchContributors(owner, repo, token),
-          fetchCollaborators(owner, repo, token).then(d => ({ data: d, error: null })).catch(e => ({ data: [], error: e.message })),
-          fetchCommits(owner, repo, token),
-          fetchPullRequests(owner, repo, token),
-          fetchIssues(owner, repo, token),
-          fetchLanguages(owner, repo, token),
-          fetchBranches(owner, repo, token),
-        ])
-      const collaborators = collaboratorsResult
 
-      // Fusion : tous les collaborateurs + contributeurs sans doublons
+    try {
+      // fetchRepoInfo is the only critical call — let it throw
+      const info = await fetchRepoInfo(owner, repo, token)
+
+      if (loadId !== loadIdRef.current) return
+
+      // All other endpoints are optional — failures degrade gracefully
+      const [
+        contributorsResult,
+        collaboratorsResult,
+        commitsResult,
+        prsResult,
+        issuesResult,
+        languagesResult,
+        branchesResult,
+        milestonesResult,
+        workflowRunsResult,
+        reviewCommentsResult,
+        qualityResult,
+      ] = await Promise.all([
+        safe(fetchContributors(owner, repo, token), []),
+        safe(fetchCollaborators(owner, repo, token), []),
+        safe(fetchCommits(owner, repo, token), []),
+        safe(fetchPullRequests(owner, repo, token), { open: [], closed: [] }),
+        safe(fetchIssues(owner, repo, token), { open: [], closed: [] }),
+        safe(fetchLanguages(owner, repo, token), {}),
+        safe(fetchBranches(owner, repo, token), []),
+        safe(fetchMilestones(owner, repo, token), { open: [], closed: [] }),
+        safe(fetchWorkflowRuns(owner, repo, token), []),
+        safe(fetchPRReviewComments(owner, repo, token), []),
+        safe(fetchQualitySignals(owner, repo, token), { signals: {}, scoreItems: [], score: 0, hasTests: false }),
+      ])
+
+      if (loadId !== loadIdRef.current) return
+
+      const contributors   = contributorsResult.data
+      const collaborators  = collaboratorsResult.data
+      const commits        = commitsResult.data
+      const prs            = prsResult.data
+      const issues         = issuesResult.data
+      const languages      = languagesResult.data
+      const branches       = branchesResult.data
+      const milestones     = milestonesResult.data
+      const workflowRuns   = workflowRunsResult.data
+      const reviewComments = reviewCommentsResult.data
+      const quality        = qualityResult.data
+
+      // Collect warnings — only for unexpected failures, not known API limitations
+      const warnings = []
+      const isExpected = msg => !msg || [
+        'too large to list',          // contributors: repo géant (linux, etc.)
+        'push access',                 // collaborators: toujours refusé sur repo public
+        'Not Found',                   // PRs/issues absents (repo sans PRs, ex: linux)
+        'Must have',                   // permissions insuffisantes
+      ].some(s => msg.includes(s))
+
+      if (commitsResult.error && !isExpected(commitsResult.error))
+        warnings.push(`Commits : ${commitsResult.error}`)
+      if (languagesResult.error && !isExpected(languagesResult.error))
+        warnings.push(`Langages : ${languagesResult.error}`)
+      if (branchesResult.error && !isExpected(branchesResult.error))
+        warnings.push(`Branches : ${branchesResult.error}`)
+      if (prsResult.error && !isExpected(prsResult.error))
+        warnings.push(`Pull Requests : ${prsResult.error}`)
+      if (issuesResult.error && !isExpected(issuesResult.error))
+        warnings.push(`Issues : ${issuesResult.error}`)
+
+      // Merge contributors + collaborators, deduplicated
       const allMembers = [...contributors]
-      collaborators.data.forEach(collab => {
-        const exists = allMembers.find(c => c.login === collab.login)
-        if (!exists) {
+      collaborators.forEach(collab => {
+        if (!allMembers.find(c => c.login === collab.login)) {
           allMembers.push({ login: collab.login, avatar_url: collab.avatar_url, contributions: 0, isCollaborator: true })
         }
       })
 
-      const merged = prs.closed.filter(pr => pr.merged_at)
-      const totalPRs = prs.open.length + prs.closed.length
+      const merged = (prs.closed || []).filter(pr => pr.merged_at)
+      const totalPRs = (prs.open?.length || 0) + (prs.closed?.length || 0)
       const mergeRate = totalPRs > 0 ? Math.round((merged.length / totalPRs) * 100) : 0
 
       const daysSinceLastCommit = commits[0]
@@ -295,16 +340,127 @@ export function useGitHubData() {
         : null
 
       const totalBytes = Object.values(languages).reduce((a, b) => a + b, 0)
-      const langData = Object.entries(languages)
-        .map(([lang, bytes]) => ({
-          name: lang,
-          value: Math.round((bytes / totalBytes) * 100),
-          bytes,
-        }))
-        .sort((a, b) => b.value - a.value)
-        .slice(0, 8)
+      const langData = totalBytes > 0
+        ? Object.entries(languages)
+            .map(([lang, bytes]) => ({ name: lang, value: Math.round((bytes / totalBytes) * 100), bytes }))
+            .sort((a, b) => b.value - a.value)
+            .slice(0, 8)
+        : []
 
-      // Commits par jour de semaine pour le bar chart
+      // ── Milestones / Sprints ──────────────────────────────────
+      const allMilestones = [
+        ...(milestones.open || []).map(m => ({ ...m, state: 'open' })),
+        ...(milestones.closed || []).slice(0, 5).map(m => ({ ...m, state: 'closed' })),
+      ].map(m => {
+        const total = (m.open_issues || 0) + (m.closed_issues || 0)
+        const progress = total > 0 ? Math.round((m.closed_issues / total) * 100) : 0
+        const dueDate = m.due_on ? new Date(m.due_on) : null
+        const daysLeft = dueDate ? Math.ceil((dueDate - new Date()) / 86400000) : null
+        return { ...m, total, progress, daysLeft }
+      })
+
+      // ── PR Health ─────────────────────────────────────────────
+      const mergedPRsList = (prs.closed || []).filter(pr => pr.merged_at)
+      const mergeTimes = mergedPRsList.map(pr => {
+        const hours = (new Date(pr.merged_at) - new Date(pr.created_at)) / 3600000
+        return hours
+      })
+      const avgMergeTimeHours = mergeTimes.length
+        ? mergeTimes.reduce((a, b) => a + b, 0) / mergeTimes.length
+        : 0
+      const mergeTimeDist = {
+        fast:   mergeTimes.filter(h => h < 24).length,
+        normal: mergeTimes.filter(h => h >= 24 && h < 72).length,
+        slow:   mergeTimes.filter(h => h >= 72 && h < 168).length,
+        stuck:  mergeTimes.filter(h => h >= 168).length,
+      }
+
+      const openPRsAged = (prs.open || []).map(pr => {
+        const ageHours = (Date.now() - new Date(pr.created_at)) / 3600000
+        return { ...pr, ageHours, ageDays: Math.floor(ageHours / 24) }
+      }).sort((a, b) => b.ageHours - a.ageHours).slice(0, 6)
+
+      // ── Review participation ──────────────────────────────────
+      const reviewerMap = {}
+      reviewComments.forEach(c => {
+        const login = c.user?.login
+        if (!login) return
+        reviewerMap[login] = (reviewerMap[login] || 0) + 1
+      })
+      const topReviewers = Object.entries(reviewerMap)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 8)
+        .map(([login, count]) => {
+          const avatar = reviewComments.find(c => c.user?.login === login)?.user?.avatar_url || null
+          return { login, count, avatar }
+        })
+
+      // ── Bus factor ───────────────────────────────────────────
+      const totalContribCommits = contributors.reduce((s, c) => s + (c.contributions || 0), 0)
+      let busCumul = 0
+      let busFactor = 0
+      const busSorted = [...contributors].sort((a, b) => b.contributions - a.contributions)
+      for (const c of busSorted) {
+        busCumul += c.contributions || 0
+        busFactor++
+        if (totalContribCommits > 0 && busCumul / totalContribCommits >= 0.5) break
+      }
+
+      // ── Label distribution ────────────────────────────────────
+      const labelMap = {}
+      ;[...(issues.open || []), ...(issues.closed || [])].forEach(issue => {
+        (issue.labels || []).forEach(l => {
+          labelMap[l.name] = { count: (labelMap[l.name]?.count || 0) + 1, color: l.color }
+        })
+      })
+      const labelDist = Object.entries(labelMap)
+        .sort((a, b) => b[1].count - a[1].count)
+        .slice(0, 10)
+        .map(([name, { count, color }]) => ({ name, count, color }))
+
+      // ── Issues sans assignee ──────────────────────────────────
+      const issuesUnassigned = (issues.open || []).filter(i => !i.assignee && !i.assignees?.length).length
+      const issuesAssigned   = (issues.open || []).length - issuesUnassigned
+
+      // ── CI / GitHub Actions ───────────────────────────────────
+      const ciRuns = workflowRuns.slice(0, 20)
+      const ciByWorkflow = {}
+      ciRuns.forEach(run => {
+        const name = run.name || run.workflow_id
+        if (!ciByWorkflow[name]) ciByWorkflow[name] = { name, runs: [], successCount: 0, failCount: 0 }
+        ciByWorkflow[name].runs.push(run)
+        if (run.conclusion === 'success') ciByWorkflow[name].successCount++
+        else if (['failure', 'timed_out', 'cancelled'].includes(run.conclusion)) ciByWorkflow[name].failCount++
+      })
+      const ciWorkflows = Object.values(ciByWorkflow).map(w => ({
+        ...w,
+        successRate: w.runs.length > 0 ? Math.round((w.successCount / w.runs.length) * 100) : 0,
+        lastRun: w.runs[0] || null,
+      }))
+      // ── Analyse commits test par développeur ─────────────────
+      const TEST_KW = /\btest(s|ing)?\b|spec\b|unit\b|e2e\b|coverage\b|jest\b|vitest\b|pytest\b|fixture/i
+      const commitTestActivity = {}
+      commits.forEach(c => {
+        const msg = c.commit.message || ''
+        const author = c.author?.login || c.commit.author.name
+        if (!commitTestActivity[author]) commitTestActivity[author] = { total: 0, testRelated: 0, avatar: c.author?.avatar_url || null }
+        commitTestActivity[author].total++
+        if (TEST_KW.test(msg)) commitTestActivity[author].testRelated++
+      })
+      const devTestActivity = Object.entries(commitTestActivity)
+        .map(([login, d]) => ({
+          login,
+          avatar: d.avatar,
+          total: d.total,
+          testRelated: d.testRelated,
+          testPct: d.total > 0 ? Math.round((d.testRelated / d.total) * 100) : 0,
+        }))
+        .filter(d => d.total >= 2)
+        .sort((a, b) => b.testPct - a.testPct)
+
+      const ciTotalSuccess = ciRuns.filter(r => r.conclusion === 'success').length
+      const ciSuccessRate  = ciRuns.length > 0 ? Math.round((ciTotalSuccess / ciRuns.length) * 100) : null
+
       const days = ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim']
       const dayMap = [0, 0, 0, 0, 0, 0, 0]
       commits.forEach(c => {
@@ -313,22 +469,20 @@ export function useGitHubData() {
       })
       const commitsByDay = days.map((d, i) => ({ day: d, commits: dayMap[i] }))
 
-      // PR par mois (6 derniers mois)
       const now = new Date()
       const prByMonth = Array.from({ length: 6 }, (_, i) => {
         const d = new Date(now.getFullYear(), now.getMonth() - 5 + i, 1)
         const label = d.toLocaleDateString('fr-FR', { month: 'short' })
-        const count = [...prs.open, ...prs.closed].filter(pr => {
+        const count = [...(prs.open || []), ...(prs.closed || [])].filter(pr => {
           const created = new Date(pr.created_at)
           return created.getMonth() === d.getMonth() && created.getFullYear() === d.getFullYear()
         }).length
         return { label, count }
       })
 
-      if (loadId !== loadIdRef.current) return
       setData({
         info,
-        collaboratorsError: collaborators.error,
+        warnings,
         contributors: allMembers.slice(0, 20),
         commits,
         dailyActivity: computeDailyActivity(commits),
@@ -341,32 +495,48 @@ export function useGitHubData() {
         ),
         prByMonth,
         prs: {
-          open: prs.open.length,
-          closed: prs.closed.length,
+          open: prs.open?.length || 0,
+          closed: prs.closed?.length || 0,
           merged: merged.length,
           total: totalPRs,
           mergeRate,
-          recentList: [...prs.open, ...prs.closed]
+          recentList: [...(prs.open || []), ...(prs.closed || [])]
             .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
             .slice(0, 6),
         },
         issues: {
-          open: issues.open.length,
-          closed: issues.closed.length,
-          resolutionRate: issues.closed.length + issues.open.length > 0
-            ? Math.round((issues.closed.length / (issues.closed.length + issues.open.length)) * 100)
+          open: issues.open?.length || 0,
+          closed: issues.closed?.length || 0,
+          resolutionRate: (issues.closed?.length || 0) + (issues.open?.length || 0) > 0
+            ? Math.round(((issues.closed?.length || 0) / ((issues.closed?.length || 0) + (issues.open?.length || 0))) * 100)
             : 0,
         },
         languages: langData,
         branches: branches.length,
         branchAnalysis: analyzeBranches(branches.map(b => b.name)),
-        prAnalysis: analyzePRs(prs.open, prs.closed),
+        prAnalysis: analyzePRs(prs.open || [], prs.closed || []),
         streak: computeStreak(commits),
         mostActiveDay: computeMostActiveDay(commits),
         daysSinceLastCommit,
         avgCommitsPerWeek: Math.round(commits.length / 16),
         commitLint: analyzeCommits(commits),
         commitLintByAuthor: analyzeByAuthor(commits),
+        // Scrum Master — nouvelles métriques
+        milestones: allMilestones,
+        prHealth: { avgMergeTimeHours, mergeTimeDist, openPRsAged },
+        topReviewers,
+        busFactor,
+        busFactorList: busSorted.slice(0, 8).map(c => ({
+          login: c.login,
+          avatar: c.avatar_url,
+          contributions: c.contributions,
+          pct: totalContribCommits > 0 ? Math.round((c.contributions / totalContribCommits) * 100) : 0,
+        })),
+        labelDist,
+        issuesAssignment: { assigned: issuesAssigned, unassigned: issuesUnassigned },
+        ci: { runs: ciRuns.slice(0, 10), workflows: ciWorkflows, successRate: ciSuccessRate },
+        quality,
+        devTestActivity,
       })
     } catch (e) {
       if (loadId !== loadIdRef.current) return
