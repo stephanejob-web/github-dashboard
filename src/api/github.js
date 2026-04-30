@@ -458,3 +458,174 @@ export async function searchRepos(query, token, perPage = 8) {
   const data = await get(url, token)
   return data?.items || []
 }
+
+// ── Scan sécurité ─────────────────────────────────────────────
+
+// Fichiers sensibles à ne jamais commiter
+const SENSITIVE_FILES = [
+  '.env', '.env.local', '.env.production', '.env.staging', '.env.development',
+  '.env.backup', '.env.bak', '.env.old', '.env.example.real',
+  'config/database.yml', 'config/secrets.yml', 'config/credentials.yml',
+  'config/master.key', 'config/application.yml',
+  'wp-config.php', 'configuration.php', 'config.php',
+  '.aws/credentials', '.aws/config',
+  'terraform.tfvars', 'terraform.tfstate',
+  'secrets.json', 'service-account.json', 'firebase-adminsdk.json',
+  'google-services.json', '.netrc', '.htpasswd',
+  'private.key', 'server.key', 'id_rsa', 'id_ed25519',
+]
+
+// Patterns de secrets dans le code (regex sur contenu fichier)
+
+export async function fetchSecurityScan(owner, repo, token) {
+  const issues = []
+
+  // 1. Listing racine
+  const rootRaw = await safe(fetchContents(owner, repo, '', token), [])
+  const rootEntries = Array.isArray(rootRaw.data) ? rootRaw.data : []
+  const rootNames = rootEntries.map(f => f.name.toLowerCase())
+
+  // 2. Vérifier .gitignore : .env dedans ?
+  let gitignoreCoversEnv = false
+  const gitignoreText = await fetchFileText(owner, repo, '.gitignore', token)
+  if (gitignoreText) {
+    gitignoreCoversEnv = /^\.env/m.test(gitignoreText) || gitignoreText.includes('.env')
+  } else {
+    issues.push({
+      severity: 'high',
+      type: 'missing_gitignore',
+      title: '.gitignore absent',
+      detail: 'Aucun .gitignore — tous les fichiers peuvent être commités accidentellement.',
+      file: null,
+    })
+  }
+
+  if (gitignoreText && !gitignoreCoversEnv) {
+    issues.push({
+      severity: 'high',
+      type: 'env_not_ignored',
+      title: '.env non ignoré dans .gitignore',
+      detail: 'Le fichier .gitignore existe mais ne couvre pas .env — risque d\'exposition de secrets.',
+      file: '.gitignore',
+    })
+  }
+
+  // 3. Chercher fichiers sensibles committés
+  const sensitiveFound = await Promise.all(
+    SENSITIVE_FILES.map(async (path) => {
+      const filename = path.toLowerCase()
+      // Vérif rapide dans la racine d'abord
+      if (rootNames.includes(filename.split('/').pop())) {
+        const text = await fetchFileText(owner, repo, path, token)
+        if (text) return { path, text }
+      }
+      return null
+    })
+  )
+
+  sensitiveFound.filter(Boolean).forEach(({ path }) => {
+    const isEnv = path.startsWith('.env')
+    issues.push({
+      severity: 'critical',
+      type: 'sensitive_file',
+      title: `Fichier sensible commité : ${path}`,
+      detail: isEnv
+        ? 'Fichier .env commité — contient probablement des clés API, tokens ou mots de passe.'
+        : `Fichier de configuration sensible présent dans le repo.`,
+      file: path,
+    })
+  })
+
+  // Chemins à exclure — faux positifs connus
+  const FP_PATHS = [
+    /[/\\]tests?[/\\]/i, /[/\\]specs?[/\\]/i, /\.(test|spec)\.[a-z]+$/i,
+    /[/\\]mocks?[/\\]/i, /[/\\]fixtures?[/\\]/i, /[/\\]stubs?[/\\]/i,
+    /[/\\]i18n[/\\]/i, /[/\\]locales?[/\\]/i, /[/\\]translations?[/\\]/i,
+    /\.isl$/i, /\.po$/i, /\.pot$/i,
+    /secretFilter/i, /secret.filter/i, /detectSecret/i, /filterSecret/i,
+    /cookbook/i, /[/\\]examples?[/\\]/i, /[/\\]samples?[/\\]/i, /[/\\]demos?[/\\]/i,
+    /[/\\]docs?[/\\]/i, /[/\\]documentation[/\\]/i,
+    /node_modules/i, /[/\\]vendor[/\\]/i, /\.min\.[a-z]+$/i,
+    /CHANGELOG/i, /README/i, /\.md$/i,
+  ]
+  const isFP = path => FP_PATHS.some(re => re.test(path))
+
+  // 4. Scanner fichiers de code pour secrets hardcodés
+  // Requêtes ciblées avec valeurs assignées (pas juste le mot-clé)
+  const SECRET_SEARCHES = [
+    { q: `repo:${owner}/${repo} "password="`,              label: 'Mot de passe assigné' },
+    { q: `repo:${owner}/${repo} "secret_key="`,            label: 'Clé secrète (secret_key)' },
+    { q: `repo:${owner}/${repo} "api_key="`,               label: 'Clé API (api_key)' },
+    { q: `repo:${owner}/${repo} AWS_SECRET_ACCESS_KEY`,    label: 'Clé secrète AWS' },
+    { q: `repo:${owner}/${repo} AKIA`,                     label: 'Access Key ID AWS' },
+    { q: `repo:${owner}/${repo} "BEGIN RSA PRIVATE KEY"`,  label: 'Clé privée RSA' },
+    { q: `repo:${owner}/${repo} "BEGIN OPENSSH PRIVATE KEY"`, label: 'Clé privée SSH' },
+  ]
+
+  const secretSearches = await Promise.all(
+    SECRET_SEARCHES.map(s =>
+      safe(get(`${BASE}/search/code?q=${encodeURIComponent(s.q)}&per_page=10`, token), { total_count: 0, items: [] })
+    )
+  )
+
+  secretSearches.forEach((r, i) => {
+    const allFiles = (r.data?.items || []).map(f => ({ path: f.path, url: f.html_url }))
+    const realFiles = allFiles.filter(f => !isFP(f.path))
+    if (realFiles.length > 0) {
+      issues.push({
+        severity: 'high',
+        type: 'hardcoded_secret',
+        title: `Secret potentiel : ${SECRET_SEARCHES[i].label}`,
+        detail: `${realFiles.length} fichier(s) suspects (tests/i18n/filtres exclus).`,
+        files: realFiles,
+        file: realFiles[0]?.path,
+        count: realFiles.length,
+      })
+    }
+  })
+
+  // 5. GitHub Secret Scanning alerts (si accès dispo)
+  const alertsRaw = await safe(get(`${BASE}/repos/${owner}/${repo}/secret-scanning/alerts?state=open&per_page=10`, token), null)
+  if (Array.isArray(alertsRaw.data) && alertsRaw.data.length > 0) {
+    alertsRaw.data.forEach(alert => {
+      issues.push({
+        severity: 'critical',
+        type: 'github_secret_alert',
+        title: `Secret détecté par GitHub : ${alert.secret_type_display_name || alert.secret_type}`,
+        detail: `GitHub a automatiquement détecté un secret exposé dans ce repo.`,
+        file: alert.locations?.[0]?.details?.path || null,
+        url: alert.html_url,
+      })
+    })
+  }
+
+  // 6. Vérifier dépendances vulnérables via Dependabot alerts
+  const vulnAlerts = await safe(get(`${BASE}/repos/${owner}/${repo}/dependabot/alerts?state=open&per_page=5`, token), null)
+  if (Array.isArray(vulnAlerts.data) && vulnAlerts.data.length > 0) {
+    const critical = vulnAlerts.data.filter(a => a.security_advisory?.severity === 'critical').length
+    const high     = vulnAlerts.data.filter(a => a.security_advisory?.severity === 'high').length
+    issues.push({
+      severity: critical > 0 ? 'critical' : 'high',
+      type: 'dependabot',
+      title: `${vulnAlerts.data.length} vulnérabilité(s) Dependabot`,
+      detail: `${critical} critique(s), ${high} haute(s) dans les dépendances.`,
+      file: null,
+      count: vulnAlerts.data.length,
+    })
+  }
+
+  // Score sécurité
+  const criticalCount = issues.filter(i => i.severity === 'critical').length
+  const highCount     = issues.filter(i => i.severity === 'high').length
+  const score = Math.max(0, 100 - criticalCount * 30 - highCount * 15)
+
+  return {
+    issues,
+    criticalCount,
+    highCount,
+    score,
+    gitignoreCoversEnv,
+    hasGitignore: !!gitignoreText,
+    secretScanningAvailable: Array.isArray(alertsRaw.data),
+  }
+}

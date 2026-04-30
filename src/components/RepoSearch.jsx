@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Search, Key, GitBranch, Zap, GitCommit, Users,
-  TrendingUp, ShieldCheck, ArrowRight, CheckCircle, Star, Code2,
+  TrendingUp, ShieldCheck, ArrowRight, CheckCircle, Star, Code2, Bookmark, X,
 } from 'lucide-react'
+import { UserButton } from '@clerk/clerk-react'
 import { getRateLimit, searchRepos } from '../api/github'
 
 const LAST_SEARCH_KEY = 'gh_last_search'
@@ -252,11 +253,11 @@ function SearchDropdown({ results, loading, activeIdx, onSelect, onMouseEnter })
 }
 
 /* ─── Composant principal ───────────────────────────────────── */
-export default function RepoSearch({ onSearch, loading }) {
+export default function RepoSearch({ onSearch, loading, savedToken, onSaveToken, favorites = [], onRemoveFavorite }) {
   const [repo, setRepo] = useState(getLastSearch)
-  const [token, setToken] = useState(getSavedToken)
-  const [showToken, setShowToken] = useState(() => !!getSavedToken())
-  const [tokenSaved, setTokenSaved] = useState(() => !!getSavedToken())
+  const [token, setToken] = useState(() => savedToken || getSavedToken())
+  const [showToken, setShowToken] = useState(() => !!(savedToken || getSavedToken()))
+  const [tokenSaved, setTokenSaved] = useState(() => !!(savedToken || getSavedToken()))
   const [inputError, setInputError] = useState('')
 
   const [suggestions, setSuggestions] = useState(null)
@@ -335,6 +336,7 @@ export default function RepoSearch({ onSearch, loading }) {
     }
     const trimmedToken = token.trim()
     saveToken(trimmedToken)
+    if (onSaveToken) onSaveToken(trimmedToken)
     setTokenSaved(!!trimmedToken)
     onSearch(parts[0], parts[1], trimmedToken || null)
   }
@@ -373,12 +375,39 @@ export default function RepoSearch({ onSearch, loading }) {
       <div style={{ position: 'fixed', bottom: '-15%', right: '-5%', width: 700, height: 700, borderRadius: '50%', background: 'radial-gradient(circle,rgba(1,181,116,0.12) 0%,transparent 65%)', filter: 'blur(60px)', pointerEvents: 'none', zIndex: 0 }} />
       <div style={{ position: 'fixed', top: '40%', left: '40%',  width: 500, height: 500, borderRadius: '50%', background: 'radial-gradient(circle,rgba(117,81,255,0.08) 0%,transparent 65%)', filter: 'blur(60px)', pointerEvents: 'none', zIndex: 0 }} />
 
+      {/* ── Barre top : UserButton + favoris ── */}
+      <div style={{ position: 'relative', zIndex: 2, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12, padding: '16px clamp(16px, 4vw, 32px)' }}>
+        {favorites.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 11, color: '#4a5568', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.07em' }}>Favoris :</span>
+            {favorites.map(f => (
+              <div key={`${f.owner}/${f.repo}`} style={{ display: 'flex', alignItems: 'center', gap: 0, borderRadius: 10, overflow: 'hidden', border: '1px solid rgba(240,192,64,0.25)', background: 'rgba(240,192,64,0.07)' }}>
+                <button
+                  onClick={() => onSearch(f.owner, f.repo, undefined)}
+                  style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 10px', background: 'transparent', border: 'none', cursor: 'pointer', color: '#f0c040', fontSize: 12, fontWeight: 600 }}
+                >
+                  <Bookmark size={11} />{f.owner}/{f.repo}
+                </button>
+                <button
+                  onClick={() => onRemoveFavorite(f.owner, f.repo)}
+                  style={{ padding: '5px 8px', background: 'transparent', border: 'none', cursor: 'pointer', color: '#4a5568', display: 'flex', alignItems: 'center' }}
+                  title="Retirer"
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <UserButton appearance={{ elements: { avatarBox: { width: 34, height: 34, borderRadius: 10 } } }} />
+      </div>
+
       {/* ── Contenu ── */}
       <div style={{
         position: 'relative', zIndex: 1, flex: 1,
         display: 'flex', flexDirection: 'column', justifyContent: 'center',
         maxWidth: 1200, margin: '0 auto', width: '100%',
-        padding: 'clamp(24px, 5vw, 48px) clamp(16px, 4vw, 32px)',
+        padding: '0 clamp(16px, 4vw, 32px) clamp(24px, 5vw, 48px)',
         gap: 'clamp(32px, 6vw, 64px)',
       }}>
 
