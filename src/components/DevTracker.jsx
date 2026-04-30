@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Flame, Calendar, GitCommit, GitPullRequest, Activity, UserX, Key } from 'lucide-react'
+import { Flame, Calendar, GitCommit, GitPullRequest, Activity, UserX, Key, CircleDot, CheckCircle2, Timer } from 'lucide-react'
 
 const GRADS = [
   ['#868cff','#4318ff'],
@@ -251,11 +251,13 @@ function DevCard({ dev, index, totalCommits }) {
       {/* ── KPI row ── */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(80px,1fr))', gap:8 }}>
         {[
-          { icon:<GitCommit size={12}/>,     label:'Commits',     val:dev.commits,        color:g1 },
-          { icon:<Calendar size={12}/>,      label:'Jours actifs', val:dev.activeDays,    color:'#868cff' },
-          { icon:<Flame size={12}/>,         label:'Série',        val:`${dev.streak}j`,  color:'#f97316' },
-          { icon:<GitPullRequest size={12}/>, label:'Pull Reqs',   val:dev.prs,           color:'#67e8f9' },
-          { icon:<Activity size={12}/>,      label:'Intensité',    val:`${dev.intensity}%`, color:'#01b574' },
+          { icon:<GitCommit size={12}/>,      label:'Commits',      val:dev.commits,             color:g1 },
+          { icon:<Calendar size={12}/>,      label:'Jours actifs', val:dev.activeDays,          color:'#868cff' },
+          { icon:<Flame size={12}/>,         label:'Série',        val:`${dev.streak}j`,        color:'#f97316' },
+          { icon:<GitPullRequest size={12}/>, label:'Pull Reqs',   val:dev.prs,                 color:'#67e8f9' },
+          { icon:<Activity size={12}/>,      label:'Intensité',    val:`${dev.intensity}%`,     color:'#01b574' },
+          { icon:<CircleDot size={12}/>,     label:'Issues assignées', val:dev.issuesAssigned,  color:'#fbbf24' },
+          { icon:<CheckCircle2 size={12}/>,  label:'Issues résolues',  val:dev.issuesResolved,  color:'#4ade80' },
         ].map(k => (
           <div key={k.label} style={{ textAlign:'center', padding:'10px 4px', borderRadius:12, background:'rgba(255,255,255,0.025)', border:'1px solid rgba(255,255,255,0.06)' }}>
             <div style={{ display:'flex', justifyContent:'center', marginBottom:4, color:k.color }}>{k.icon}</div>
@@ -264,6 +266,39 @@ function DevCard({ dev, index, totalCommits }) {
           </div>
         ))}
       </div>
+
+      {/* ── Temps de résolution issues ── */}
+      {(dev.issuesAssigned > 0 || dev.issuesResolved > 0) && (
+        <div style={{ display:'flex', gap:10, flexWrap:'wrap' }}>
+          {dev.issuesResolved > 0 && dev.issuesAssigned > 0 && (() => {
+            const rate = Math.round((dev.issuesResolved / dev.issuesAssigned) * 100)
+            const color = rate >= 80 ? '#4ade80' : rate >= 50 ? '#fbbf24' : '#f87171'
+            return (
+              <div style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 12px', borderRadius:10,
+                background:`${color}10`, border:`1px solid ${color}30` }}>
+                <CheckCircle2 size={12} color={color} />
+                <span style={{ fontSize:11, fontWeight:700, color }}>
+                  {rate}% résolues ({dev.issuesResolved}/{dev.issuesAssigned})
+                </span>
+              </div>
+            )
+          })()}
+          {dev.avgResolutionHours !== null && (() => {
+            const h = dev.avgResolutionHours
+            const label = h < 1 ? '< 1h' : h < 24 ? `${h}h` : `${(h/24).toFixed(1)}j`
+            const color = h <= 24 ? '#4ade80' : h <= 72 ? '#fbbf24' : '#f87171'
+            return (
+              <div style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 12px', borderRadius:10,
+                background:`${color}10`, border:`1px solid ${color}30` }}>
+                <Timer size={12} color={color} />
+                <span style={{ fontSize:11, fontWeight:700, color }}>
+                  Résolution moy. {label}
+                </span>
+              </div>
+            )
+          })()}
+        </div>
+      )}
 
       {/* ── Heatmap ── */}
       <div>
@@ -322,10 +357,65 @@ function DevCard({ dev, index, totalCommits }) {
   )
 }
 
+const PAGE_SIZE = 4
+
+function Pagination({ page, total, pageSize, onChange }) {
+  const totalPages = Math.ceil(total / pageSize)
+  if (totalPages <= 1) return null
+  const start = page * pageSize + 1
+  const end   = Math.min((page + 1) * pageSize, total)
+  return (
+    <div style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:12, marginTop:16 }}>
+      <button
+        onClick={() => onChange(page - 1)}
+        disabled={page === 0}
+        style={{
+          padding:'6px 16px', borderRadius:10, fontSize:12, fontWeight:700, cursor: page === 0 ? 'default' : 'pointer',
+          background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)',
+          color: page === 0 ? '#374151' : '#a0aec0', transition:'all 0.15s',
+        }}
+      >← Préc.</button>
+
+      <span style={{ fontSize:12, color:'#718096' }}>
+        <strong style={{ color:'#e2e8f0' }}>{start}–{end}</strong> sur <strong style={{ color:'#e2e8f0' }}>{total}</strong>
+      </span>
+
+      <span style={{ display:'flex', gap:5 }}>
+        {Array.from({ length: totalPages }, (_, i) => (
+          <button key={i} onClick={() => onChange(i)} style={{
+            width:28, height:28, borderRadius:8, fontSize:11, fontWeight:700, cursor:'pointer',
+            background: i === page ? 'rgba(134,140,255,0.2)' : 'rgba(255,255,255,0.03)',
+            border: `1px solid ${i === page ? 'rgba(134,140,255,0.4)' : 'rgba(255,255,255,0.06)'}`,
+            color: i === page ? '#868cff' : '#4a5568',
+          }}>{i + 1}</button>
+        ))}
+      </span>
+
+      <button
+        onClick={() => onChange(page + 1)}
+        disabled={page >= totalPages - 1}
+        style={{
+          padding:'6px 16px', borderRadius:10, fontSize:12, fontWeight:700, cursor: page >= totalPages - 1 ? 'default' : 'pointer',
+          background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)',
+          color: page >= totalPages - 1 ? '#374151' : '#a0aec0', transition:'all 0.15s',
+        }}
+      >Suiv. →</button>
+    </div>
+  )
+}
+
 /* ─── Composant principal ──────────────────────────────────── */
 export default function DevTracker({ authorCommits, collaboratorsError, token }) {
-  const [filter, setFilter] = useState('all')
+  const [filter, setFilter]       = useState('all')
+  const [pageActive, setPageActive]     = useState(0)
+  const [pageInactive, setPageInactive] = useState(0)
   const totalCommits = authorCommits.reduce((s, d) => s + d.commits, 0)
+
+  function handleFilterChange(f) {
+    setFilter(f)
+    setPageActive(0)
+    setPageInactive(0)
+  }
 
   const withCommits    = authorCommits.filter(d => d.commits > 0)
   const withoutCommits = authorCommits.filter(d => d.commits === 0)
@@ -402,7 +492,7 @@ export default function DevTracker({ authorCommits, collaboratorsError, token })
             { key:'active',   label:`Actifs (${activeCount})`,           color:'#4ade80', bg:'rgba(74,222,128,0.1)',   border:'rgba(74,222,128,0.25)' },
             { key:'inactive', label:`Inactifs (${inactiveCount + zeroCount})`, color:'#ef4444', bg:'rgba(239,68,68,0.08)', border:'rgba(239,68,68,0.2)' },
           ].map(f => (
-            <button key={f.key} onClick={() => setFilter(f.key)} style={{
+            <button key={f.key} onClick={() => handleFilterChange(f.key)} style={{
               fontSize:12, fontWeight:600, padding:'6px 14px', borderRadius:10, cursor:'pointer',
               background: filter === f.key ? f.bg : 'rgba(255,255,255,0.03)',
               border: `1px solid ${filter === f.key ? f.border : 'rgba(255,255,255,0.07)'}`,
@@ -435,43 +525,49 @@ export default function DevTracker({ authorCommits, collaboratorsError, token })
         </div>
       </div>
 
-      {/* Cards membres actifs */}
-      {(filter === 'all' || filter === 'active') && filteredActive.filter(d => d.commits > 0).length > 0 && (
-        <div style={{ marginBottom: 28 }}>
-          {filter === 'all' && (
-            <p style={{ fontSize:11, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.09em', color:'rgba(74,222,128,0.7)', marginBottom:14 }}>
-              Contributeurs ({withCommits.length})
-            </p>
-          )}
-          <div className="dev-cards-grid">
-            {filteredActive.filter(d => d.commits > 0).map(dev => (
-              <DevCard key={dev.name} dev={dev} index={authorCommits.indexOf(dev)} totalCommits={totalCommits} />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Cards membres sans commits */}
-      {(filter === 'all' || filter === 'inactive') && (
-        (() => {
-          const inactiveList = filter === 'all'
-            ? withoutCommits
-            : authorCommits.filter(d => d.commits === 0 || d.daysSinceLast > 14)
-          if (inactiveList.length === 0) return null
-          return (
-            <div>
-              <p style={{ fontSize:11, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.09em', color:'rgba(239,68,68,0.7)', marginBottom:14 }}>
-                Sans contribution ({inactiveList.length})
+      {/* Cards membres actifs — paginés */}
+      {(filter === 'all' || filter === 'active') && (() => {
+        const activeList = filteredActive.filter(d => d.commits > 0)
+        if (activeList.length === 0) return null
+        const paged = activeList.slice(pageActive * PAGE_SIZE, (pageActive + 1) * PAGE_SIZE)
+        return (
+          <div style={{ marginBottom: 28 }}>
+            {filter === 'all' && (
+              <p style={{ fontSize:11, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.09em', color:'rgba(74,222,128,0.7)', marginBottom:14 }}>
+                Contributeurs ({activeList.length})
               </p>
-              <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
-                {inactiveList.map((dev, i) => (
-                  <InactiveCard key={dev.name} dev={dev} index={i} />
-                ))}
-              </div>
+            )}
+            <div className="dev-cards-grid">
+              {paged.map(dev => (
+                <DevCard key={dev.name} dev={dev} index={authorCommits.indexOf(dev)} totalCommits={totalCommits} />
+              ))}
             </div>
-          )
-        })()
-      )}
+            <Pagination page={pageActive} total={activeList.length} pageSize={PAGE_SIZE} onChange={setPageActive} />
+          </div>
+        )
+      })()}
+
+      {/* Cards membres sans commits — paginés */}
+      {(filter === 'all' || filter === 'inactive') && (() => {
+        const inactiveList = filter === 'all'
+          ? withoutCommits
+          : authorCommits.filter(d => d.commits === 0 || d.daysSinceLast > 14)
+        if (inactiveList.length === 0) return null
+        const paged = inactiveList.slice(pageInactive * PAGE_SIZE, (pageInactive + 1) * PAGE_SIZE)
+        return (
+          <div>
+            <p style={{ fontSize:11, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.09em', color:'rgba(239,68,68,0.7)', marginBottom:14 }}>
+              Sans contribution ({inactiveList.length})
+            </p>
+            <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+              {paged.map((dev, i) => (
+                <InactiveCard key={dev.name} dev={dev} index={pageInactive * PAGE_SIZE + i} />
+              ))}
+            </div>
+            <Pagination page={pageInactive} total={inactiveList.length} pageSize={PAGE_SIZE} onChange={setPageInactive} />
+          </div>
+        )
+      })()}
 
       {filteredActive.length === 0 && withoutCommits.length === 0 && (
         <div className="glass" style={{ padding:40, textAlign:'center' }}>

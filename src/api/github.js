@@ -164,6 +164,19 @@ async function fetchWorkflowText(owner, repo, filename, token) {
   } catch { return '' }
 }
 
+// Fetch any file content as decoded lowercase text
+async function fetchFileText(owner, repo, path, token) {
+  try {
+    const res = await fetchWithTimeout(
+      `${BASE}/repos/${owner}/${repo}/contents/${path}`,
+      { headers: headers(token) }
+    )
+    if (!res.ok) return ''
+    const json = await res.json()
+    return json?.content ? decodeBase64(json.content).toLowerCase() : ''
+  } catch { return '' }
+}
+
 async function fetchPkgJson(owner, repo, path, token) {
   const res = await safe(fetchContents(owner, repo, path, token), null)
   if (!res.data?.content) return null
@@ -195,14 +208,12 @@ export async function fetchQualitySignals(owner, repo, token) {
 
   const mergedDeps = {}
   const mergedScripts = {}
-  let mergedPkgKeys = {}
   allPkgJsons.forEach(pkg => {
     Object.assign(mergedDeps, pkg.dependencies || {}, pkg.devDependencies || {}, pkg.peerDependencies || {})
     Object.assign(mergedScripts, pkg.scripts || {})
-    Object.assign(mergedPkgKeys, pkg)
   })
 
-  // 4. Fichiers de config dans les sous-dossiers (vitest.config.ts en backend/, etc.)
+  // 4. Fichiers de config dans les sous-dossiers
   const subDirFiles = (await Promise.all(
     subDirsToCheck.map(d =>
       safe(fetchContents(owner, repo, d, token), [])
@@ -212,14 +223,23 @@ export async function fetchQualitySignals(owner, repo, token) {
 
   const allFiles = [...rootNames, ...subDirFiles]
 
-  // 5. Workflows listing
+  // 5. Workflows listing + contenu YAML des 4 premiers
   const workflowsRaw  = await safe(fetchContents(owner, repo, '.github/workflows', token), [])
   const workflowFiles = Array.isArray(workflowsRaw.data) ? workflowsRaw.data.filter(f => /\.ya?ml$/i.test(f.name)) : []
-
-  // 6. Contenu YAML des 4 premiers workflows
   const workflowTexts = (
     await Promise.all(workflowFiles.slice(0, 4).map(f => fetchWorkflowText(owner, repo, f.name, token)))
   ).join('\n')
+
+  // 6. Contenu des hooks Husky (vérification réelle que les hooks sont branchés)
+  const [huskyPreCommit, huskyCommitMsg, huskyPrePush] = await Promise.all([
+    fetchFileText(owner, repo, '.husky/pre-commit', token),
+    fetchFileText(owner, repo, '.husky/commit-msg', token),
+    fetchFileText(owner, repo, '.husky/pre-push', token),
+  ])
+  const allHuskyContent = huskyPreCommit + huskyCommitMsg + huskyPrePush
+
+  // 7. Contenu tsconfig.json pour vérifier strict mode
+  const tsconfigText = await fetchFileText(owner, repo, 'tsconfig.json', token)
 
   // ── Helpers ──────────────────────────────────────────────────
   const scriptText = Object.values(mergedScripts).join(' ').toLowerCase()
@@ -227,42 +247,87 @@ export async function fetchQualitySignals(owner, repo, token) {
   const hasDep    = (...names) => names.some(n => n in mergedDeps)
   const hasFile   = (...names) => names.some(n => allFiles.includes(n.toLowerCase()))
   const hasDir    = (...names) => names.some(n => rootDirs.includes(n.toLowerCase()))
-  const hasPkg    = (key)     => allPkgJsons.some(p => !!(p?.[key]))
-  const hasScript = (...kws)  => kws.some(k => scriptText.includes(k))
-  const ciHas     = (...kws)  => kws.some(k => workflowTexts.includes(k))
+  const hasPkg    = (key)      => allPkgJsons.some(p => !!(p?.[key]))
+  const hasScript = (...kws)   => kws.some(k => scriptText.includes(k))
+  const ciHas     = (...kws)   => kws.some(k => workflowTexts.includes(k))
 
-  // ── Détection ────────────────────────────────────────────────
+  // ── Détection stricte ─────────────────────────────────────────
+
+  // Tests : framework détecté
+  const jestInstalled      = hasDep('jest', '@jest/core') || hasFile('jest.config.js', 'jest.config.ts', 'jest.config.mjs', 'jest.config.cjs') || hasPkg('jest')
+  const vitestInstalled    = hasDep('vitest') || hasFile('vitest.config.js', 'vitest.config.ts', 'vitest.config.mjs', 'vitest.config.cjs')
+  const mochaInstalled     = hasDep('mocha') || hasFile('.mocharc.js', '.mocharc.yml', '.mocharc.json', '.mocharc.cjs')
+  const pytestInstalled    = hasFile('pytest.ini', 'conftest.py', 'pyproject.toml') || hasDir('tests', 'test')
+  const goTestInstalled    = hasFile('go.mod')
+  const phpunitInstalled   = hasFile('phpunit.xml', 'phpunit.xml.dist')
+  const rspecInstalled     = hasDir('spec')
+  const testDirsExist      = hasDir('__tests__', 'tests', 'test', 'spec', 'e2e', '__test__')
+  const scriptHasTest      = hasScript('jest', 'vitest', 'mocha', 'pytest', 'ava', 'jasmine', 'cypress run', 'playwright test')
+
+  // ESLint : installé ET (script lint présent OU CI lint)
+  const eslintInstalled = hasDep('eslint') || hasFile('.eslintrc', '.eslintrc.js', '.eslintrc.json', '.eslintrc.yml', '.eslintrc.cjs', '.eslintrc.mjs', 'eslint.config.js', 'eslint.config.mjs', 'eslint.config.cjs') || hasPkg('eslintConfig')
+  const eslintActive    = eslintInstalled && (hasScript('eslint', 'lint') || ciHas('eslint', 'npm run lint', 'yarn lint', 'pnpm lint', 'flake8', 'golangci', 'rubocop'))
+
+  // Prettier : installé ET (script format présent OU CI prettier)
+  const prettierInstalled = hasDep('prettier') || hasFile('.prettierrc', '.prettierrc.js', '.prettierrc.json', '.prettierrc.yml', '.prettierrc.yaml', '.prettierrc.cjs', '.prettierrc.mjs', 'prettier.config.js', 'prettier.config.mjs', 'prettier.config.cjs') || hasPkg('prettier')
+  const prettierActive    = prettierInstalled && (hasScript('prettier', 'format') || ciHas('prettier', 'npm run format', 'yarn format', 'pnpm format', 'format:check'))
+
+  // TypeScript : installé ET (strict:true dans tsconfig OU typecheck en CI OU script tsc)
+  const tsInstalled    = hasDep('typescript') || hasFile('tsconfig.json', 'tsconfig.base.json', 'tsconfig.app.json') || subDirFiles.includes('tsconfig.json')
+  const tsStrict       = tsconfigText.includes('"strict": true') || tsconfigText.includes('"strict":true')
+  const tsChecked      = ciHas('tsc --no', 'type-check', 'typecheck', 'vue-tsc') || hasScript('typecheck', 'type-check', 'tsc --no')
+  const typescriptActive = tsInstalled && (tsStrict || tsChecked)
+
+  // Husky : .husky/ présent ET au moins un hook non-vide (pas juste installé)
+  const huskyInstalled = hasDep('husky') || hasDir('.husky') || hasPkg('husky')
+  const huskyActive    = huskyInstalled && allHuskyContent.trim().length > 20
+
+  // lint-staged : installé ET Husky pre-commit l'appelle réellement
+  const lintStagedInstalled = hasDep('lint-staged') || hasPkg('lint-staged')
+  const lintStagedActive    = lintStagedInstalled && huskyPreCommit.includes('lint-staged')
+
+  // Commitlint : config présente ET hook commit-msg appelle commitlint
+  const commitlintInstalled = hasDep('@commitlint/cli', '@commitlint/config-conventional') || hasFile('commitlint.config.js', 'commitlint.config.ts', 'commitlint.config.cjs', 'commitlint.config.mjs', '.commitlintrc', '.commitlintrc.js', '.commitlintrc.json', '.commitlintrc.yml') || hasPkg('commitlint')
+  const commitlintActive    = commitlintInstalled && huskyCommitMsg.includes('commitlint')
+
+  // CI
+  const ciHasTests    = ciHas('npm test', 'yarn test', 'pnpm test', 'npx vitest', 'jest', 'vitest', 'pytest', 'go test', 'phpunit', 'rspec', 'cypress', 'playwright')
+  const ciHasLint     = ciHas('eslint', 'npm run lint', 'yarn lint', 'pnpm lint', 'flake8', 'golangci', 'rubocop')
+  const ciHasPrettier = ciHas('prettier', 'npm run format', 'yarn format', 'pnpm format', 'format:check')
+  const ciHasBuild    = ciHas('npm run build', 'yarn build', 'pnpm build', 'go build', 'cargo build', 'vite build')
+  const ciHasTypecheck= ciHas('tsc --no', 'type-check', 'typecheck', 'vue-tsc')
+
   const signals = {
-    // Tests
-    jest:      hasDep('jest', '@jest/core') || hasFile('jest.config.js', 'jest.config.ts', 'jest.config.mjs', 'jest.config.cjs') || hasPkg('jest') || hasScript('jest'),
-    vitest:    hasDep('vitest') || hasFile('vitest.config.js', 'vitest.config.ts', 'vitest.config.mjs', 'vitest.config.cjs') || hasScript('vitest'),
-    mocha:     hasDep('mocha') || hasFile('.mocharc.js', '.mocharc.yml', '.mocharc.json', '.mocharc.cjs') || hasScript('mocha'),
-    pytest:    hasFile('pytest.ini', 'setup.cfg', 'conftest.py', 'pyproject.toml') || hasDir('tests', 'test'),
-    goTest:    hasFile('go.mod'),
-    phpunit:   hasFile('phpunit.xml', 'phpunit.xml.dist'),
-    rspec:     hasFile('spec') || hasDir('spec'),
-    cypress:   hasDep('cypress') || hasFile('cypress.config.js', 'cypress.config.ts') || hasDir('cypress'),
-    playwright:hasDep('@playwright/test') || hasFile('playwright.config.js', 'playwright.config.ts'),
-    testDirs:  hasDir('__tests__', 'tests', 'test', 'spec', 'e2e', '__test__'),
-    scriptTest:hasScript('jest', 'vitest', 'mocha', 'pytest', 'ava', 'jasmine', 'cypress run', 'playwright test'),
+    jest: jestInstalled, vitest: vitestInstalled, mocha: mochaInstalled,
+    pytest: pytestInstalled, goTest: goTestInstalled, phpunit: phpunitInstalled,
+    rspec: rspecInstalled, testDirs: testDirsExist, scriptTest: scriptHasTest,
+    cypress:    hasDep('cypress') || hasFile('cypress.config.js', 'cypress.config.ts') || hasDir('cypress'),
+    playwright: hasDep('@playwright/test') || hasFile('playwright.config.js', 'playwright.config.ts'),
 
-    // Qualité code
-    prettier:    hasDep('prettier') || hasFile('.prettierrc', '.prettierrc.js', '.prettierrc.json', '.prettierrc.yml', '.prettierrc.yaml', '.prettierrc.cjs', '.prettierrc.mjs', 'prettier.config.js', 'prettier.config.mjs', 'prettier.config.cjs') || hasPkg('prettier'),
-    eslint:      hasDep('eslint') || hasFile('.eslintrc', '.eslintrc.js', '.eslintrc.json', '.eslintrc.yml', '.eslintrc.cjs', '.eslintrc.mjs', 'eslint.config.js', 'eslint.config.mjs', 'eslint.config.cjs') || hasPkg('eslintConfig'),
-    typescript:  hasDep('typescript') || hasFile('tsconfig.json', 'tsconfig.base.json', 'tsconfig.app.json') || subDirFiles.includes('tsconfig.json'),
-    husky:       hasDep('husky') || hasDir('.husky') || hasPkg('husky'),
-    lintStaged:  hasDep('lint-staged') || hasPkg('lint-staged'),
+    // Qualité — signaux bruts (pour badges)
+    eslintInstalled, prettierInstalled, tsInstalled,
+    huskyInstalled, lintStagedInstalled, commitlintInstalled,
+
+    // Qualité — signaux stricts (pour score)
+    eslint:      eslintActive,
+    prettier:    prettierActive,
+    typescript:  typescriptActive,
+    husky:       huskyActive,
+    lintStaged:  lintStagedActive,
+    commitlint:  commitlintActive,
     editorconfig:hasFile('.editorconfig'),
-    commitlint:  hasDep('@commitlint/cli', '@commitlint/config-conventional') || hasFile('commitlint.config.js', 'commitlint.config.ts', 'commitlint.config.cjs', 'commitlint.config.mjs', '.commitlintrc', '.commitlintrc.js', '.commitlintrc.json', '.commitlintrc.yml') || hasPkg('commitlint'),
 
-    // CI
-    ciHasTests:    ciHas('npm test', 'yarn test', 'pnpm test', 'npx vitest', 'jest', 'vitest', 'pytest', 'go test', 'phpunit', 'rspec', 'cypress', 'playwright'),
-    ciHasLint:     ciHas('eslint', 'npm run lint', 'yarn lint', 'pnpm lint', 'flake8', 'golangci', 'rubocop'),
-    ciHasPrettier: ciHas('prettier', 'npm run format', 'yarn format', 'pnpm format', 'format:check'),
-    ciHasBuild:    ciHas('npm run build', 'yarn build', 'pnpm build', 'go build', 'cargo build', 'vite build'),
-    ciHasTypecheck:ciHas('tsc --no', 'type-check', 'typecheck', 'vue-tsc'),
+    // Détails Husky (pour affichage)
+    huskyHooks: {
+      preCommit: huskyPreCommit.trim().length > 10,
+      commitMsg: huskyCommitMsg.trim().length > 10,
+      prePush:   huskyPrePush.trim().length > 10,
+    },
 
-    // Méta
+    // TypeScript détails
+    tsStrict, tsChecked,
+
+    ciHasTests, ciHasLint, ciHasPrettier, ciHasBuild, ciHasTypecheck,
     hasWorkflows:   workflowFiles.length > 0,
     workflowCount:  workflowFiles.length,
     workflowNames:  workflowFiles.map(f => f.name.replace(/\.ya?ml$/, '')),
@@ -271,31 +336,74 @@ export async function fetchQualitySignals(owner, repo, token) {
     isMonorepo:     subDirsToCheck.length > 0 && subPkgs.some(Boolean),
   }
 
-  // ── Score ─────────────────────────────────────────────────────
-  const hasTests = signals.jest || signals.vitest || signals.mocha || signals.pytest
-    || signals.goTest || signals.phpunit || signals.rspec
-    || signals.testDirs || signals.scriptTest
+  // ── Détection écosystème ──────────────────────────────────────
+  const isJS      = allPkgJsons.length > 0
+  const isPython  = hasFile('requirements.txt', 'setup.py', 'setup.cfg', 'pyproject.toml', 'pipfile', 'poetry.lock') || hasDir('venv', '.venv')
+  const isGo      = hasFile('go.mod', 'go.sum')
+  const isRuby    = hasFile('gemfile', 'gemfile.lock', '.ruby-version')
+  const isJava    = hasFile('pom.xml', 'build.gradle', 'build.gradle.kts')
+  const isCSharp  = rootNames.some(f => f.endsWith('.csproj') || f.endsWith('.sln'))
+  const isC       = rootNames.some(f => f.endsWith('.c') || f.endsWith('.h')) || hasFile('cmakelists.txt', 'makefile')
+  const isCpp     = rootNames.some(f => f.endsWith('.cpp') || f.endsWith('.cc')) || hasFile('cmakelists.txt')
+  const isRust    = hasFile('cargo.toml')
+  const isPhp     = hasFile('composer.json')
 
-  const scoreItems = [
-    { key: 'tests',       label: 'Tests configurés',         ok: hasTests,               weight: 20, category: 'tests' },
-    { key: 'ciTests',     label: 'Tests lancés en CI',       ok: signals.ciHasTests,     weight: 20, category: 'ci' },
-    { key: 'eslint',      label: 'Linter (ESLint)',           ok: signals.eslint,         weight: 12, category: 'quality' },
-    { key: 'ciLint',      label: 'Lint en CI',               ok: signals.ciHasLint,      weight: 8,  category: 'ci' },
-    { key: 'prettier',    label: 'Prettier',                  ok: signals.prettier,       weight: 8,  category: 'quality' },
-    { key: 'typescript',  label: 'TypeScript',               ok: signals.typescript,     weight: 8,  category: 'quality' },
-    { key: 'husky',       label: 'Pre-commit hooks (Husky)', ok: signals.husky,          weight: 6,  category: 'quality' },
-    { key: 'lintStaged',  label: 'lint-staged',              ok: signals.lintStaged,     weight: 4,  category: 'quality' },
-    { key: 'commitlint',  label: 'Commitlint',               ok: signals.commitlint,     weight: 6,  category: 'quality' },
-    { key: 'editorconfig',label: 'EditorConfig',             ok: signals.editorconfig,   weight: 4,  category: 'quality' },
-    { key: 'ciBuild',     label: 'Build vérifié en CI',      ok: signals.ciHasBuild,     weight: 2,  category: 'ci' },
-    { key: 'ciTypecheck', label: 'Type-check en CI',         ok: signals.ciHasTypecheck, weight: 2,  category: 'ci' },
+  // Linter/formatter par écosystème (non-JS)
+  const ciHasNonJsLint = ciHas('flake8', 'pylint', 'ruff', 'mypy', 'golangci', 'staticcheck', 'rubocop', 'phpcs', 'checkstyle', 'spotbugs', 'clippy', 'cppcheck', 'clang-tidy')
+  const ciHasNonJsFmt  = ciHas('black', 'isort', 'autopep8', 'gofmt', 'rustfmt', 'clang-format', 'php-cs-fixer')
+
+  // Tests par écosystème
+  const hasTests = jestInstalled || vitestInstalled || mochaInstalled || pytestInstalled
+    || goTestInstalled || phpunitInstalled || rspecInstalled
+    || testDirsExist || scriptHasTest
+
+  // ── Score adapté à l'écosystème ───────────────────────────────
+  // Items universels (tout projet)
+  const universalItems = [
+    { key: 'tests',    label: 'Tests configurés',   ok: hasTests,   weight: 20, category: 'tests' },
+    { key: 'ciTests',  label: 'Tests lancés en CI', ok: ciHasTests, weight: 20, category: 'ci' },
+    { key: 'ciBuild',  label: 'Build vérifié en CI',ok: ciHasBuild, weight: 6,  category: 'ci' },
+    { key: 'editorconfig', label: 'EditorConfig',   ok: signals.editorconfig, weight: 4, category: 'quality' },
   ]
+
+  // Items JS/TS uniquement
+  const jsItems = isJS ? [
+    { key: 'eslint',      label: 'ESLint actif (installé + script)',   ok: eslintActive,      weight: 12, category: 'quality' },
+    { key: 'ciLint',      label: 'Lint en CI',                         ok: ciHasLint,         weight: 8,  category: 'ci' },
+    { key: 'prettier',    label: 'Prettier actif (installé + script)', ok: prettierActive,    weight: 8,  category: 'quality' },
+    { key: 'typescript',  label: 'TypeScript strict ou vérifié',       ok: typescriptActive,  weight: 8,  category: 'quality' },
+    { key: 'husky',       label: 'Hooks Husky branchés (non-vides)',   ok: huskyActive,       weight: 6,  category: 'quality' },
+    { key: 'lintStaged',  label: 'lint-staged appelé dans Husky',      ok: lintStagedActive,  weight: 4,  category: 'quality' },
+    { key: 'commitlint',  label: 'Commitlint branché (commit-msg)',     ok: commitlintActive,  weight: 6,  category: 'quality' },
+    { key: 'ciTypecheck', label: 'Type-check en CI',                   ok: ciHasTypecheck,    weight: 2,  category: 'ci' },
+  ] : []
+
+  // Items non-JS : linter/formatter générique via CI
+  const nonJsItems = !isJS ? [
+    { key: 'ciLint',    label: 'Linter en CI',    ok: ciHasNonJsLint || ciHasLint, weight: 12, category: 'ci' },
+    { key: 'ciFormat',  label: 'Formatter en CI', ok: ciHasNonJsFmt  || ciHasPrettier, weight: 8, category: 'ci' },
+  ] : []
+
+  const scoreItems = [...universalItems, ...jsItems, ...nonJsItems]
 
   const totalWeight  = scoreItems.reduce((s, i) => s + i.weight, 0)
   const earnedWeight = scoreItems.filter(i => i.ok).reduce((s, i) => s + i.weight, 0)
   const score = Math.round((earnedWeight / totalWeight) * 100)
 
-  return { signals, scoreItems, score, hasTests }
+  // Écosystème détecté pour affichage
+  const ecosystem = isJS ? 'javascript'
+    : isPython ? 'python'
+    : isGo     ? 'go'
+    : isRuby   ? 'ruby'
+    : isJava   ? 'java'
+    : isCSharp ? 'csharp'
+    : isC      ? 'c'
+    : isCpp    ? 'cpp'
+    : isRust   ? 'rust'
+    : isPhp    ? 'php'
+    : 'unknown'
+
+  return { signals: { ...signals, ecosystem }, scoreItems, score, hasTests }
 }
 
 export async function fetchTestFiles(owner, repo, token) {
