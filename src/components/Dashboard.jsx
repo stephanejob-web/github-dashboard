@@ -1,8 +1,9 @@
 import {
   GitCommit, Users, GitBranch, GitPullRequest,
   Flame, Calendar, Zap, TrendingUp,
-  ArrowLeft, ExternalLink, Star, GitFork, Eye, RefreshCw, Key,
+  ArrowLeft, ExternalLink, Star, GitFork, Eye, RefreshCw, Key, Bookmark, BookmarkCheck,
 } from 'lucide-react'
+import { UserButton } from '@clerk/clerk-react'
 import StatCard from './StatCard'
 import ContributorsTable from './ContributorsTable'
 import ActivityChart from './ActivityChart'
@@ -19,6 +20,7 @@ import PRHealthPanel from './PRHealthPanel'
 import RiskPanel from './RiskPanel'
 import CIPanel from './CIPanel'
 import QualityPanel from './QualityPanel'
+import SecurityPanel from './SecurityPanel'
 import SMOverview from './SMOverview'
 import { clearCache } from '../api/github'
 
@@ -47,7 +49,7 @@ function MetaBadge({ icon, val, label }) {
   )
 }
 
-function TopBar({ info, owner, repo, onBack, token, onRefresh }) {
+function TopBar({ info, owner, repo, onBack, token, onRefresh, isFavorite, onToggleFavorite }) {
   return (
     <nav className="topbar">
       <div style={{ display: 'flex', alignItems: 'center', gap: 20 }}>
@@ -114,18 +116,35 @@ function TopBar({ info, owner, repo, onBack, token, onRefresh }) {
           <RefreshCw size={12} /> Actualiser
         </button>
 
+        {/* Bouton favori */}
+        <button onClick={onToggleFavorite} title={isFavorite ? 'Retirer des favoris' : 'Ajouter aux favoris'} style={{
+          display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, padding: '6px 14px',
+          borderRadius: 10, cursor: 'pointer', transition: 'all 0.2s',
+          background: isFavorite ? 'rgba(240,192,64,0.12)' : 'rgba(255,255,255,0.04)',
+          border: `1px solid ${isFavorite ? 'rgba(240,192,64,0.35)' : 'rgba(255,255,255,0.08)'}`,
+          color: isFavorite ? '#f0c040' : '#718096',
+        }}
+          onMouseEnter={e => { e.currentTarget.style.background = isFavorite ? 'rgba(240,192,64,0.18)' : 'rgba(255,255,255,0.07)' }}
+          onMouseLeave={e => { e.currentTarget.style.background = isFavorite ? 'rgba(240,192,64,0.12)' : 'rgba(255,255,255,0.04)' }}
+        >
+          {isFavorite ? <BookmarkCheck size={13} /> : <Bookmark size={13} />}
+          {isFavorite ? 'Favori' : 'Ajouter'}
+        </button>
+
         <a href={info.html_url} target="_blank" rel="noopener noreferrer" style={{
           display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, padding: '7px 18px',
           borderRadius: 10, background: 'linear-gradient(135deg,#4318ff,#01b574)',
           color: '#fff', fontWeight: 600, textDecoration: 'none',
-          boxShadow: '0 0 20px rgba(66,42,251,0.4)',
-          transition: 'opacity 0.2s',
+          boxShadow: '0 0 20px rgba(66,42,251,0.4)', transition: 'opacity 0.2s',
         }}
           onMouseEnter={e => e.currentTarget.style.opacity = '0.85'}
           onMouseLeave={e => e.currentTarget.style.opacity = '1'}
         >
           <ExternalLink size={13} /> GitHub
         </a>
+
+        {/* Avatar utilisateur Clerk */}
+        <UserButton appearance={{ elements: { avatarBox: { width: 32, height: 32, borderRadius: 10 } } }} />
       </div>
     </nav>
   )
@@ -143,14 +162,14 @@ function SectionHeader({ label, title, sub }) {
   )
 }
 
-export default function Dashboard({ data, owner, repo, onBack, token, onRefresh }) {
+export default function Dashboard({ data, owner, repo, onBack, token, onRefresh, isFavorite, onToggleFavorite }) {
   const {
     info, contributors, commits, dailyActivity, weeklyActivity, monthlyActivity, commitsByDay, authorCommits,
     warnings = [],
     prByMonth, prs, issues, languages, branches, branchAnalysis, prAnalysis, streak, mostActiveDay,
     daysSinceLastCommit, avgCommitsPerWeek, commitLint, commitLintByAuthor,
     milestones = [], prHealth, topReviewers = [], busFactor, busFactorList = [], labelDist = [], issuesAssignment, ci,
-    quality, testFiles, devTestActivity = [],
+    quality, testFiles, devTestActivity = [], security,
   } = data
 
   const topContributor = contributors[0]
@@ -230,7 +249,7 @@ export default function Dashboard({ data, owner, repo, onBack, token, onRefresh 
     <div style={{ minHeight: '100vh', background: 'var(--navy)', position: 'relative' }}>
       <BgGlow />
       <div style={{ position: 'relative', zIndex: 1 }}>
-        <TopBar info={info} owner={owner} repo={repo} onBack={onBack} token={token} onRefresh={onRefresh} />
+        <TopBar info={info} owner={owner} repo={repo} onBack={onBack} token={token} onRefresh={onRefresh} isFavorite={isFavorite} onToggleFavorite={onToggleFavorite} />
 
         <div className="dash-container">
 
@@ -347,6 +366,12 @@ export default function Dashboard({ data, owner, repo, onBack, token, onRefresh 
               {prHealth && <PRHealthPanel prHealth={prHealth} topReviewers={topReviewers} />}
               <RiskPanel busFactor={busFactor ?? 0} busFactorList={busFactorList} labelDist={labelDist} issuesAssignment={issuesAssignment ?? { assigned: 0, unassigned: 0 }} />
             </div>
+          </div>
+
+          {/* ── Sécurité ── */}
+          <div style={{ marginBottom: 24 }}>
+            <SectionHeader label="Sécurité · Scrum Master" title="Analyse de sécurité" sub={security ? `Score : ${security.score}/100` : ''} />
+            <SecurityPanel security={security} />
           </div>
 
           {/* ── Qualité & bonnes pratiques ── */}

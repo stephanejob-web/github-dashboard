@@ -15,6 +15,7 @@ import {
   fetchPRReviewComments,
   fetchQualitySignals,
   fetchTestFiles,
+  fetchSecurityScan,
   safe,
 } from '../api/github'
 
@@ -313,6 +314,7 @@ export function useGitHubData() {
         reviewCommentsResult,
         qualityResult,
         testFilesResult,
+        securityResult,
       ] = await Promise.all([
         safe(fetchContributors(owner, repo, token), []),
         safe(fetchCollaborators(owner, repo, token), []),
@@ -326,6 +328,7 @@ export function useGitHubData() {
         safe(fetchPRReviewComments(owner, repo, token), []),
         safe(fetchQualitySignals(owner, repo, token), { signals: {}, scoreItems: [], score: 0, hasTests: false }),
         safe(fetchTestFiles(owner, repo, token), { count: 0, hasRealTests: false, examples: [] }),
+        safe(fetchSecurityScan(owner, repo, token), { issues: [], criticalCount: 0, highCount: 0, score: 100 }),
       ])
 
       if (loadId !== loadIdRef.current) return
@@ -341,6 +344,7 @@ export function useGitHubData() {
       const workflowRuns   = workflowRunsResult.data
       const reviewComments = reviewCommentsResult.data
       const testFiles      = testFilesResult.data
+      const security       = securityResult.data
 
       // Post-process: framework installé mais zéro fichier de test réel → scoreItem "tests" à false
       const quality = (() => {
@@ -593,6 +597,7 @@ export function useGitHubData() {
         quality,
         testFiles,
         devTestActivity,
+        security,
       })
     } catch (e) {
       if (loadId !== loadIdRef.current) return
