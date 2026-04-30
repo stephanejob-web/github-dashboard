@@ -477,7 +477,124 @@ const SENSITIVE_FILES = [
 
 // Patterns de secrets dans le code (regex sur contenu fichier)
 
-export async function fetchSecurityScan(owner, repo, token) {
+// En dev Vite proxy /gg-api → https://api.gitguardian.com (contourne CORS)
+// En prod : variable VITE_GG_PROXY_URL à définir (Cloudflare Worker, etc.)
+const GG_BASE = import.meta.env.DEV
+  ? '/gg-api'
+  : (import.meta.env.VITE_GG_PROXY_URL ?? 'https://api.gitguardian.com')
+
+export async function fetchGGReport(owner, repo, ggToken) {
+  if (!ggToken) return null
+  const headers = { 'Authorization': `Token ${ggToken}`, 'Content-Type': 'application/json' }
+
+  try {
+    // Verify token + get quota
+    const meRes = await fetch(`${GG_BASE}/v1/health`, { headers })
+    if (!meRes.ok) return { error: meRes.status === 401 ? 'Token invalide' : `Erreur ${meRes.status}` }
+
+    // Fetch incidents (all pages up to 100)
+    const incRes = await fetch(`${GG_BASE}/v1/incidents?per_page=100&ordering=-date`, { headers })
+    if (incRes.status === 404 || incRes.status === 403) {
+      return { error: 'scope_insufficient', status: incRes.status }
+    }
+    if (!incRes.ok) return { error: `Incidents API: ${incRes.status}` }
+    const incData = await incRes.json()
+    const allIncidents = incData.results ?? []
+
+    // Filter by repo
+    const repoFull = `${owner}/${repo}`.toLowerCase()
+    const repoIncidents = allIncidents.filter(inc => {
+      const src = inc.source?.full_name ?? inc.source?.name ?? ''
+      return src.toLowerCase().includes(repoFull) || src.toLowerCase() === repoFull
+    })
+
+    // Stats globales (tous repos)
+    const total        = allIncidents.length
+    const triggered    = allIncidents.filter(i => i.status === 'TRIGGERED').length
+    const ignored      = allIncidents.filter(i => i.status === 'IGNORED').length
+    const resolved     = allIncidents.filter(i => i.status === 'RESOLVED').length
+    const validCount   = allIncidents.filter(i => i.validity === 'valid').length
+
+    return {
+      incidents: repoIncidents,
+      allCount: total,
+      triggered,
+      ignored,
+      resolved,
+      validCount,
+      hasMore: (incData.count ?? 0) > 100,
+      totalCount: incData.count ?? total,
+    }
+  } catch (e) {
+    return { error: e.message ?? 'Erreur réseau' }
+  }
+}
+const GG_SCAN_FILES = [
+  'package.json', 'config.js', 'config.ts', 'config.json',
+  'settings.py', 'settings.js', 'app.config.js', 'app.config.ts',
+  'docker-compose.yml', 'docker-compose.yaml',
+  '.travis.yml', 'Makefile', 'Dockerfile',
+  'terraform.tfvars', 'variables.tf',
+  'src/config.js', 'src/config.ts', 'src/constants.js',
+  'app/config.py', 'config/config.py',
+]
+
+async function scanWithGitGuardian(owner, repo, ghToken, ggToken) {
+  if (!ggToken) return []
+  const ggIssues = []
+
+  // Fetch file contents then multiscan
+  const fileContents = await Promise.all(
+    GG_SCAN_FILES.map(async path => {
+      const text = await fetchFileText(owner, repo, path, ghToken)
+      if (!text) return null
+      return { filename: path, document: text }
+    })
+  )
+  const docs = fileContents.filter(Boolean)
+  if (docs.length === 0) return []
+
+  // GG multiscan — max 20 docs per request
+  const chunks = []
+  for (let i = 0; i < docs.length; i += 20) chunks.push(docs.slice(i, i + 20))
+
+  for (const chunk of chunks) {
+    try {
+      const res = await fetch(`${GG_BASE}/v1/multiscan`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Token ${ggToken}`,
+        },
+        body: JSON.stringify(chunk.map(d => ({ filename: d.filename, document: d.document }))),
+      })
+      if (!res.ok) continue
+      const results = await res.json()
+      if (!Array.isArray(results)) continue
+
+      results.forEach((scanResult, i) => {
+        const filename = chunk[i]?.filename ?? '?'
+        const breaks = scanResult.policy_breaks ?? []
+        breaks.forEach(pb => {
+          const validity = pb.validity ?? 'unknown'
+          ggIssues.push({
+            severity: validity === 'valid' ? 'critical' : 'high',
+            type: 'gitguardian',
+            title: `GitGuardian : ${pb.break_type || pb.type || 'Secret détecté'}`,
+            detail: `Fichier : ${filename} · Validité : ${validity === 'valid' ? '⚠ actif' : validity === 'invalid' ? '✓ révoqué' : '? inconnu'}. ${pb.policy ?? ''}`.trim(),
+            file: filename,
+            validity,
+            ggDetector: pb.detector?.display_name ?? pb.detector?.name ?? pb.type,
+          })
+        })
+      })
+    } catch { /* GG API down — skip silently */ }
+  }
+
+  return ggIssues
+}
+
+export async function fetchSecurityScan(owner, repo, token, ggToken) {
   const issues = []
 
   // 1. Listing racine
@@ -536,6 +653,53 @@ export async function fetchSecurityScan(owner, repo, token) {
     })
   })
 
+  // 3b. Vérifier .env.example / .env.sample / .env.template
+  // Ces fichiers sont normaux à commiter, MAIS parfois contiennent de vraies valeurs par erreur
+  const ENV_EXAMPLE_NAMES = ['.env.example', '.env.sample', '.env.template', '.env.dist', '.env.default']
+  // Regex pour détecter une vraie valeur (pas un placeholder)
+  // Placeholder patterns : KEY=, KEY="", KEY=your_key, KEY=xxxx, KEY=<value>, KEY=changeme, KEY=todo
+  const PLACEHOLDER_RE = /^[^=]+=\s*$|^[^=]+=\s*["']?\s*["']?\s*$|=\s*(your_|my_|changeme|todo|xxx+|<[^>]+>|example|dummy|test|fake|sample|replace|none|null|true|false|0|1)/i
+  const REAL_VALUE_RE  = /^[A-Z_]+=.{8,}/m  // ligne type KEY=valeur_longue (≥8 chars) = probablement réelle
+
+  await Promise.all(
+    ENV_EXAMPLE_NAMES.map(async (path) => {
+      const filename = path.toLowerCase()
+      if (!rootNames.includes(filename)) return
+      const text = await fetchFileText(owner, repo, path, token)
+      if (!text) return
+
+      const lines = text.split('\n').filter(l => l.trim() && !l.trim().startsWith('#'))
+      const assignedLines = lines.filter(l => l.includes('='))
+
+      if (assignedLines.length === 0) return // fichier vide ou que des commentaires
+
+      // Détecter si des lignes ont l'air de vraies valeurs
+      const suspiciousLines = assignedLines.filter(l => {
+        if (PLACEHOLDER_RE.test(l)) return false
+        return REAL_VALUE_RE.test(l)
+      })
+
+      if (suspiciousLines.length > 0) {
+        issues.push({
+          severity: 'high',
+          type: 'env_example_real_values',
+          title: `${path} contient des valeurs réelles`,
+          detail: `${suspiciousLines.length} ligne(s) dans ${path} ressemblent à de vraies clés (pas des placeholders). Vérifier que ce ne sont pas de vrais secrets.`,
+          file: path,
+          exampleLines: suspiciousLines.slice(0, 3).map(l => l.replace(/=.+/, '=***')),
+        })
+      } else {
+        issues.push({
+          severity: 'info',
+          type: 'env_example_ok',
+          title: `${path} présent — placeholders uniquement`,
+          detail: `Fichier d'exemple commité normalement. Aucune valeur réelle détectée. Vérification manuelle recommandée.`,
+          file: path,
+        })
+      }
+    })
+  )
+
   // Chemins à exclure — faux positifs connus
   const FP_PATHS = [
     /[/\\]tests?[/\\]/i, /[/\\]specs?[/\\]/i, /\.(test|spec)\.[a-z]+$/i,
@@ -584,20 +748,62 @@ export async function fetchSecurityScan(owner, repo, token) {
     }
   })
 
-  // 5. GitHub Secret Scanning alerts (si accès dispo)
+  // 5. GitHub Secret Scanning alerts — ouverts
   const alertsRaw = await safe(get(`${BASE}/repos/${owner}/${repo}/secret-scanning/alerts?state=open&per_page=10`, token), null)
   if (Array.isArray(alertsRaw.data) && alertsRaw.data.length > 0) {
     alertsRaw.data.forEach(alert => {
       issues.push({
         severity: 'critical',
         type: 'github_secret_alert',
-        title: `Secret détecté par GitHub : ${alert.secret_type_display_name || alert.secret_type}`,
+        title: `Secret actif détecté par GitHub : ${alert.secret_type_display_name || alert.secret_type}`,
         detail: `GitHub a automatiquement détecté un secret exposé dans ce repo.`,
         file: alert.locations?.[0]?.details?.path || null,
         url: alert.html_url,
       })
     })
   }
+
+  // 5b. Secret Scanning — résolus (secret dans l'historique, potentiellement encore valide)
+  const alertsResolved = await safe(get(`${BASE}/repos/${owner}/${repo}/secret-scanning/alerts?state=resolved&per_page=10`, token), null)
+  if (Array.isArray(alertsResolved.data) && alertsResolved.data.length > 0) {
+    alertsResolved.data.forEach(alert => {
+      issues.push({
+        severity: 'high',
+        type: 'github_secret_history',
+        title: `Secret dans l'historique git : ${alert.secret_type_display_name || alert.secret_type}`,
+        detail: `Ce secret était commité. Même "résolu", il peut encore être valide — révoquez-le si ce n'est pas fait.`,
+        file: alert.locations?.[0]?.details?.path || null,
+        url: alert.html_url,
+        fromHistory: true,
+      })
+    })
+  }
+
+  // 5c. Fichiers sensibles dans l'historique git (commités puis supprimés)
+  const HISTORY_FILES = ['.env', '.env.local', '.env.production', 'config/secrets.yml', 'id_rsa', '.npmrc']
+  const historyChecks = await Promise.all(
+    HISTORY_FILES.map(path =>
+      safe(get(`${BASE}/repos/${owner}/${repo}/commits?path=${encodeURIComponent(path)}&per_page=1`, token), null)
+    )
+  )
+  historyChecks.forEach((r, i) => {
+    const commits = r.data
+    if (!Array.isArray(commits) || commits.length === 0) return
+    const path = HISTORY_FILES[i]
+    // Vérifier si le fichier existe encore (déjà couvert par check 3), ne signaler que si absent maintenant
+    const existsNow = rootNames.includes(path.split('/').pop().toLowerCase())
+    if (existsNow) return // déjà signalé comme critique
+    const lastCommit = commits[0]
+    issues.push({
+      severity: 'high',
+      type: 'sensitive_file_history',
+      title: `${path} présent dans l'historique git`,
+      detail: `Ce fichier a été commité (dernier commit : ${lastCommit.commit?.author?.date?.slice(0,10) ?? '?'} par ${lastCommit.commit?.author?.name ?? '?'}). Supprimé depuis, mais visible dans git log. Réécrivez l'historique avec git-filter-repo si nécessaire.`,
+      file: path,
+      url: lastCommit.html_url,
+      fromHistory: true,
+    })
+  })
 
   // 6. Vérifier dépendances vulnérables via Dependabot alerts
   const vulnAlerts = await safe(get(`${BASE}/repos/${owner}/${repo}/dependabot/alerts?state=open&per_page=5`, token), null)
@@ -614,18 +820,26 @@ export async function fetchSecurityScan(owner, repo, token) {
     })
   }
 
-  // Score sécurité
-  const criticalCount = issues.filter(i => i.severity === 'critical').length
-  const highCount     = issues.filter(i => i.severity === 'high').length
-  const score = Math.max(0, 100 - criticalCount * 30 - highCount * 15)
+  // 7. GitGuardian scan (si token dispo)
+  const ggIssues = await scanWithGitGuardian(owner, repo, token, ggToken)
+  issues.push(...ggIssues)
+  const ggScanned = !!ggToken
+
+  // Score sécurité (info = 0 pénalité, historiques pénalisent moins)
+  const criticalCount  = issues.filter(i => i.severity === 'critical' && !i.fromHistory).length
+  const highCount      = issues.filter(i => i.severity === 'high'     && !i.fromHistory).length
+  const historyCount   = issues.filter(i => i.fromHistory).length
+  const score = Math.max(0, 100 - criticalCount * 30 - highCount * 15 - historyCount * 8)
 
   return {
     issues,
     criticalCount,
     highCount,
+    historyCount,
     score,
     gitignoreCoversEnv,
     hasGitignore: !!gitignoreText,
     secretScanningAvailable: Array.isArray(alertsRaw.data),
+    ggScanned,
   }
 }

@@ -2,6 +2,7 @@ import {
   GitCommit, Users, GitBranch, GitPullRequest,
   Flame, Calendar, Zap, TrendingUp,
   ArrowLeft, ExternalLink, Star, GitFork, Eye, RefreshCw, Key, Bookmark, BookmarkCheck,
+  ShieldAlert, ShieldCheck,
 } from 'lucide-react'
 import { UserButton } from '@clerk/clerk-react'
 import StatCard from './StatCard'
@@ -21,8 +22,10 @@ import RiskPanel from './RiskPanel'
 import CIPanel from './CIPanel'
 import QualityPanel from './QualityPanel'
 import SecurityPanel from './SecurityPanel'
+import GGReportPanel from './GGReportPanel'
 import SMOverview from './SMOverview'
 import { clearCache } from '../api/github'
+import { useRef } from 'react'
 
 function BgGlow() {
   return (
@@ -150,6 +153,110 @@ function TopBar({ info, owner, repo, onBack, token, onRefresh, isFavorite, onTog
   )
 }
 
+function SecurityAlertBanner({ security, onClick }) {
+  if (!security) return null
+  const criticalIssues = security.issues?.filter(i => i.severity === 'critical') ?? []
+  const highIssues = security.issues?.filter(i => i.severity === 'high') ?? []
+  const totalThreats = criticalIssues.length + highIssues.length
+  if (totalThreats === 0 && security.score >= 80) return null
+
+  const isCritical = criticalIssues.length > 0
+  const color = isCritical ? '#ef4444' : '#f97316'
+  const glow = isCritical ? 'rgba(239,68,68,0.3)' : 'rgba(249,115,22,0.3)'
+  const bg = isCritical ? 'rgba(239,68,68,0.08)' : 'rgba(249,115,22,0.08)'
+  const border = isCritical ? 'rgba(239,68,68,0.35)' : 'rgba(249,115,22,0.35)'
+
+  return (
+    <button onClick={onClick} style={{
+      width: '100%', display: 'flex', alignItems: 'center', gap: 16,
+      padding: '14px 20px', borderRadius: 16, cursor: 'pointer',
+      background: bg, border: `1px solid ${border}`,
+      boxShadow: `0 0 30px ${glow}, inset 0 1px 0 rgba(255,255,255,0.05)`,
+      marginBottom: 20, textAlign: 'left', transition: 'all 0.2s',
+      animation: 'securityBlink 2s ease-in-out infinite',
+    }}
+      onMouseEnter={e => { e.currentTarget.style.boxShadow = `0 0 50px ${glow}, inset 0 1px 0 rgba(255,255,255,0.05)`; e.currentTarget.style.transform = 'translateY(-1px)' }}
+      onMouseLeave={e => { e.currentTarget.style.boxShadow = `0 0 30px ${glow}, inset 0 1px 0 rgba(255,255,255,0.05)`; e.currentTarget.style.transform = 'translateY(0)' }}
+    >
+      {/* Icône pulsante */}
+      <div style={{
+        width: 48, height: 48, borderRadius: 14, flexShrink: 0,
+        background: `linear-gradient(135deg, ${color}22, ${color}44)`,
+        border: `1px solid ${color}55`,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        animation: 'securityIconPulse 1.5s ease-in-out infinite',
+        boxShadow: `0 0 20px ${glow}`,
+      }}>
+        <ShieldAlert size={24} color={color} />
+      </div>
+
+      {/* Texte */}
+      <div style={{ flex: 1 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+          <span style={{ fontSize: 14, fontWeight: 800, color, letterSpacing: '-0.02em' }}>
+            {isCritical ? 'FAILLE CRITIQUE DÉTECTÉE' : 'PROBLÈME DE SÉCURITÉ DÉTECTÉ'}
+          </span>
+          {/* Badge clignotant */}
+          <span style={{
+            fontSize: 10, fontWeight: 900, padding: '2px 8px', borderRadius: 6,
+            background: color, color: '#fff', letterSpacing: '0.05em',
+            animation: 'badgeBlink 1s step-start infinite',
+            boxShadow: `0 0 10px ${glow}`,
+          }}>
+            {isCritical ? '⚠ CRITIQUE' : '⚠ ATTENTION'}
+          </span>
+        </div>
+        <p style={{ fontSize: 12, color: '#a0aec0', lineHeight: 1.5 }}>
+          {criticalIssues.length > 0 && `${criticalIssues.length} faille${criticalIssues.length > 1 ? 's' : ''} critique${criticalIssues.length > 1 ? 's' : ''}`}
+          {criticalIssues.length > 0 && highIssues.length > 0 && ' · '}
+          {highIssues.length > 0 && `${highIssues.length} risque${highIssues.length > 1 ? 's' : ''} élevé${highIssues.length > 1 ? 's' : ''}`}
+          {' · '}Score sécurité : <strong style={{ color }}>{security.score}/100</strong>
+          {' · '}Cliquer pour voir le rapport complet ↓
+        </p>
+      </div>
+
+      {/* Score cercle */}
+      <div style={{
+        width: 52, height: 52, borderRadius: '50%', flexShrink: 0,
+        background: `conic-gradient(${color} ${security.score * 3.6}deg, rgba(255,255,255,0.05) 0deg)`,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        boxShadow: `0 0 15px ${glow}`,
+        position: 'relative',
+      }}>
+        <div style={{
+          width: 38, height: 38, borderRadius: '50%',
+          background: 'var(--navy)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 13, fontWeight: 900, color,
+        }}>
+          {security.score}
+        </div>
+      </div>
+
+      {/* Chevron */}
+      <span style={{ fontSize: 18, color, opacity: 0.7, flexShrink: 0 }}>›</span>
+    </button>
+  )
+}
+
+function SecurityOkBanner({ security }) {
+  if (!security || security.score < 80) return null
+  const issues = security.issues ?? []
+  if (issues.length > 0) return null
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 12,
+      padding: '10px 18px', borderRadius: 12, marginBottom: 20,
+      background: 'rgba(1,181,116,0.06)', border: '1px solid rgba(1,181,116,0.2)',
+    }}>
+      <ShieldCheck size={18} color="#01b574" />
+      <span style={{ fontSize: 12, color: '#01b574', fontWeight: 600 }}>
+        Aucune faille critique — Score sécurité : {security.score}/100
+      </span>
+    </div>
+  )
+}
+
 function SectionHeader({ label, title, sub }) {
   return (
     <div style={{ marginBottom: 16 }}>
@@ -162,7 +269,8 @@ function SectionHeader({ label, title, sub }) {
   )
 }
 
-export default function Dashboard({ data, owner, repo, onBack, token, onRefresh, isFavorite, onToggleFavorite }) {
+export default function Dashboard({ data, owner, repo, onBack, token, onRefresh, isFavorite, onToggleFavorite, ggToken, onSaveGGToken }) {
+  const securityRef = useRef(null)
   const {
     info, contributors, commits, dailyActivity, weeklyActivity, monthlyActivity, commitsByDay, authorCommits,
     warnings = [],
@@ -252,6 +360,10 @@ export default function Dashboard({ data, owner, repo, onBack, token, onRefresh,
         <TopBar info={info} owner={owner} repo={repo} onBack={onBack} token={token} onRefresh={onRefresh} isFavorite={isFavorite} onToggleFavorite={onToggleFavorite} />
 
         <div className="dash-container">
+
+          {/* ══ SECURITY ALERT BANNER ══ */}
+          <SecurityAlertBanner security={security} onClick={() => securityRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} />
+          <SecurityOkBanner security={security} />
 
           {/* Repo description */}
           {info.description && (
@@ -369,9 +481,12 @@ export default function Dashboard({ data, owner, repo, onBack, token, onRefresh,
           </div>
 
           {/* ── Sécurité ── */}
-          <div style={{ marginBottom: 24 }}>
+          <div ref={securityRef} style={{ marginBottom: 24 }}>
             <SectionHeader label="Sécurité · Scrum Master" title="Analyse de sécurité" sub={security ? `Score : ${security.score}/100` : ''} />
-            <SecurityPanel security={security} />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+              <SecurityPanel security={security} owner={owner} repo={repo} token={token} ggToken={ggToken} onSaveGGToken={onSaveGGToken} />
+              {ggToken && <GGReportPanel owner={owner} repo={repo} ggToken={ggToken} />}
+            </div>
           </div>
 
           {/* ── Qualité & bonnes pratiques ── */}

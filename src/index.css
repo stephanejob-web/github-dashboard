@@ -38,6 +38,48 @@ body {
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 99px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
 
+/* Security alert banner animations */
+@keyframes securityBlink {
+  0%, 100% { box-shadow: 0 0 30px rgba(239,68,68,0.25), inset 0 1px 0 rgba(255,255,255,0.05); }
+  50%       { box-shadow: 0 0 55px rgba(239,68,68,0.55), inset 0 1px 0 rgba(255,255,255,0.05); }
+}
+
+@keyframes securityIconPulse {
+  0%, 100% { transform: scale(1);    box-shadow: 0 0 15px rgba(239,68,68,0.3); }
+  50%       { transform: scale(1.1); box-shadow: 0 0 30px rgba(239,68,68,0.7); }
+}
+
+@keyframes badgeBlink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+/* SecurityPanel animations */
+@keyframes radarSweep {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes shieldPulse {
+  0%, 100% { filter: drop-shadow(0 0 8px rgba(1,181,116,0.6)); transform: scale(1); }
+  50%       { filter: drop-shadow(0 0 20px rgba(1,181,116,1)); transform: scale(1.08); }
+}
+
+@keyframes gaugeGlow {
+  0%, 100% { opacity: 0.5; }
+  50%       { opacity: 1; }
+}
+
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeInLog {
+  from { opacity: 0; transform: translateX(-6px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
 /* Glass card base */
 .glass {
   background: var(--glass);

@@ -253,11 +253,14 @@ function SearchDropdown({ results, loading, activeIdx, onSelect, onMouseEnter })
 }
 
 /* ─── Composant principal ───────────────────────────────────── */
-export default function RepoSearch({ onSearch, loading, savedToken, onSaveToken, favorites = [], onRemoveFavorite }) {
+export default function RepoSearch({ onSearch, loading, savedToken, onSaveToken, savedGGToken = '', onSaveGGToken, favorites = [], onRemoveFavorite }) {
   const [repo, setRepo] = useState(getLastSearch)
   const [token, setToken] = useState(() => savedToken || getSavedToken())
   const [showToken, setShowToken] = useState(() => !!(savedToken || getSavedToken()))
   const [tokenSaved, setTokenSaved] = useState(() => !!(savedToken || getSavedToken()))
+  const [ggToken, setGGToken] = useState(() => savedGGToken || '')
+  const [showGGToken, setShowGGToken] = useState(() => !!savedGGToken)
+  const [ggTokenSaved, setGGTokenSaved] = useState(() => !!savedGGToken)
   const [inputError, setInputError] = useState('')
 
   const [suggestions, setSuggestions] = useState(null)
@@ -338,6 +341,9 @@ export default function RepoSearch({ onSearch, loading, savedToken, onSaveToken,
     saveToken(trimmedToken)
     if (onSaveToken) onSaveToken(trimmedToken)
     setTokenSaved(!!trimmedToken)
+    const trimmedGG = ggToken.trim()
+    if (onSaveGGToken) onSaveGGToken(trimmedGG)
+    setGGTokenSaved(!!trimmedGG)
     onSearch(parts[0], parts[1], trimmedToken || null)
   }
 
@@ -611,6 +617,60 @@ export default function RepoSearch({ onSearch, loading, savedToken, onSaveToken,
                     <p style={{ fontSize: 11, color: '#4a5568', marginTop: 4, paddingLeft: 4 }}>
                       Token actif · utilisation automatique à chaque analyse
                     </p>
+                  )}
+                </div>
+
+                {/* GitGuardian token */}
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: showGGToken ? 10 : 0 }}>
+                    <button
+                      type="button"
+                      onClick={() => setShowGGToken(v => !v)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 7,
+                        fontSize: 12, color: ggTokenSaved ? '#f97316' : showGGToken ? '#f97316' : '#4a5568',
+                        background: 'none', border: 'none', cursor: 'pointer', padding: 0, transition: 'color 0.2s',
+                      }}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                      </svg>
+                      {ggTokenSaved
+                        ? 'GitGuardian actif ✓'
+                        : showGGToken ? 'Masquer' : 'GitGuardian (optionnel · scan secrets avancé)'}
+                      <span style={{ fontSize: 10, marginLeft: 2 }}>{showGGToken ? '▲' : '▼'}</span>
+                    </button>
+                    {ggTokenSaved && (
+                      <button type="button" onClick={() => { setGGToken(''); setGGTokenSaved(false); if (onSaveGGToken) onSaveGGToken('') }}
+                        style={{ fontSize: 11, color: '#ef4444', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, padding: '3px 10px', cursor: 'pointer' }}
+                      >Supprimer</button>
+                    )}
+                  </div>
+                  {showGGToken && (
+                    <>
+                      <div style={{ position: 'relative' }}>
+                        <input
+                          type="password"
+                          value={ggToken}
+                          onChange={e => { setGGToken(e.target.value); setGGTokenSaved(false) }}
+                          placeholder="ggtt_xxxxxxxxxxxxxxxxxxxx"
+                          style={{
+                            width: '100%', padding: '11px 14px', borderRadius: 11, fontSize: 13, color: '#e2e8f0',
+                            outline: 'none', background: 'rgba(255,255,255,0.04)',
+                            border: `1px solid ${ggTokenSaved ? 'rgba(249,115,22,0.4)' : 'rgba(255,255,255,0.09)'}`,
+                            transition: 'border-color 0.2s',
+                          }}
+                          onFocus={e => { if (!ggTokenSaved) e.target.style.borderColor = 'rgba(249,115,22,0.4)' }}
+                          onBlur={e => { if (!ggTokenSaved) e.target.style.borderColor = 'rgba(255,255,255,0.09)' }}
+                        />
+                        {ggTokenSaved && <span style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', fontSize: 12, color: '#f97316', pointerEvents: 'none' }}>✓</span>}
+                      </div>
+                      <p style={{ fontSize: 10, color: '#4a5568', marginTop: 5, paddingLeft: 2, lineHeight: 1.5 }}>
+                        Token GitGuardian — détecte 350+ types de secrets. Gratuit sur{' '}
+                        <span style={{ color: '#f97316' }}>dashboard.gitguardian.com</span> → API → Personal access tokens.{' '}
+                        <span style={{ color: '#374151' }}>⚠ Le contenu des fichiers est envoyé à l'API GG pour analyse.</span>
+                      </p>
+                    </>
                   )}
                 </div>
 

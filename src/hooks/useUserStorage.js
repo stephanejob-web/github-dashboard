@@ -48,5 +48,18 @@ export function useUserStorage() {
     return getFavorites().some(f => f.owner === owner && f.repo === repo)
   }, [getFavorites])
 
-  return { getToken, saveToken, getFavorites, addFavorite, removeFavorite, isFavorite }
+  const getGGToken = useCallback(() => {
+    if (!uid) return ''
+    try { return localStorage.getItem(key(uid, 'gg_token')) || '' } catch { return '' }
+  }, [uid])
+
+  const saveGGToken = useCallback((token) => {
+    if (!uid) return
+    try {
+      if (token) localStorage.setItem(key(uid, 'gg_token'), token)
+      else localStorage.removeItem(key(uid, 'gg_token'))
+    } catch {}
+  }, [uid])
+
+  return { getToken, saveToken, getFavorites, addFavorite, removeFavorite, isFavorite, getGGToken, saveGGToken }
 }
