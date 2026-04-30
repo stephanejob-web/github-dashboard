@@ -288,7 +288,7 @@ export function useGitHubData() {
   const [error, setError] = useState(null)
   const loadIdRef = useRef(0)
 
-  const load = useCallback(async (owner, repo, token) => {
+  const load = useCallback(async (owner, repo, token, ggToken) => {
     const loadId = ++loadIdRef.current
     setLoading(true)
     setError(null)
@@ -328,7 +328,7 @@ export function useGitHubData() {
         safe(fetchPRReviewComments(owner, repo, token), []),
         safe(fetchQualitySignals(owner, repo, token), { signals: {}, scoreItems: [], score: 0, hasTests: false }),
         safe(fetchTestFiles(owner, repo, token), { count: 0, hasRealTests: false, examples: [] }),
-        safe(fetchSecurityScan(owner, repo, token), { issues: [], criticalCount: 0, highCount: 0, score: 100 }),
+        safe(fetchSecurityScan(owner, repo, token, ggToken), { issues: [], criticalCount: 0, highCount: 0, score: 100 }),
       ])
 
       if (loadId !== loadIdRef.current) return

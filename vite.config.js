@@ -4,6 +4,16 @@ import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  server: {
+    proxy: {
+      '/gg-api': {
+        target: 'https://api.gitguardian.com',
+        changeOrigin: true,
+        rewrite: path => path.replace(/^\/gg-api/, ''),
+        secure: true,
+      },
+    },
+  },
   build: {
     rolldownOptions: {
       output: {

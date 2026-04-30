@@ -18,7 +18,7 @@ function AppInner() {
   const { data, loading, error, load, reset } = useGitHubData()
   const [current, setCurrent] = useState(null)
   const [, setFavVersion] = useState(0)
-  const { getToken, saveToken, getFavorites, addFavorite, removeFavorite, isFavorite } = useUserStorage()
+  const { getToken, saveToken, getFavorites, addFavorite, removeFavorite, isFavorite, getGGToken, saveGGToken } = useUserStorage()
 
   function handleToggleFavorite(owner, repo) {
     if (isFavorite(owner, repo)) removeFavorite(owner, repo)
@@ -28,8 +28,8 @@ function AppInner() {
 
   async function handleSearch(owner, repo, token) {
     const tok = token ?? getToken()
-    setCurrent({ owner, repo, token: tok })
-    await load(owner, repo, tok)
+    setCurrent({ owner, repo, token: tok, ggToken: getGGToken() })
+    await load(owner, repo, tok, getGGToken())
   }
 
   if (loading) {
@@ -115,6 +115,8 @@ function AppInner() {
         onRefresh={() => handleSearch(current.owner, current.repo, current.token)}
         isFavorite={isFavorite(current.owner, current.repo)}
         onToggleFavorite={() => handleToggleFavorite(current.owner, current.repo)}
+        ggToken={current.ggToken}
+        onSaveGGToken={saveGGToken}
       />
     )
   }
@@ -125,6 +127,8 @@ function AppInner() {
       loading={loading}
       savedToken={getToken()}
       onSaveToken={saveToken}
+      savedGGToken={getGGToken()}
+      onSaveGGToken={saveGGToken}
       favorites={getFavorites()}
       onRemoveFavorite={(owner, repo) => { removeFavorite(owner, repo); setFavVersion(v => v + 1) }}
     />
