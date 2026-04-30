@@ -134,10 +134,38 @@ function computeContributorActivity(commits, prsOpen, prsClosed, issuesOpen, iss
     ...(issuesOpen || []).filter(i => !i.pull_request),
     ...(issuesClosed || []).filter(i => !i.pull_request),
   ]
-  const issueMap = {}
+  // Issues créées par dev
+  const issueCreatedMap = {}
   allIssues.forEach(issue => {
     const login = issue.user?.login
-    if (login) issueMap[login] = (issueMap[login] || 0) + 1
+    if (login) issueCreatedMap[login] = (issueCreatedMap[login] || 0) + 1
+  })
+
+  // Issues assignées (open + closed) + issues résolues (closed + assigné) + temps résolution
+  const issueAssignedMap  = {}  // total assignées
+  const issueResolvedMap  = {}  // résolues (closed + assigné)
+  const issueResTimeMap   = {}  // somme heures résolution (pour moyenne)
+  const issueResCountMap  = {}  // nb issues avec temps mesurable
+
+  allIssues.forEach(issue => {
+    const assignees = [
+      ...(issue.assignees || []),
+      ...(issue.assignee ? [issue.assignee] : []),
+    ]
+    const logins = [...new Set(assignees.map(a => a.login).filter(Boolean))]
+
+    logins.forEach(login => {
+      issueAssignedMap[login] = (issueAssignedMap[login] || 0) + 1
+
+      if (issue.state === 'closed' && issue.closed_at) {
+        issueResolvedMap[login] = (issueResolvedMap[login] || 0) + 1
+        const hours = Math.round((new Date(issue.closed_at) - new Date(issue.created_at)) / 3_600_000)
+        if (hours >= 0) {
+          issueResTimeMap[login]  = (issueResTimeMap[login]  || 0) + hours
+          issueResCountMap[login] = (issueResCountMap[login] || 0) + 1
+        }
+      }
+    })
   })
 
   return Object.values(map).map(a => {
@@ -200,7 +228,12 @@ function computeContributorActivity(commits, prsOpen, prsClosed, issuesOpen, iss
       streak,
       dayOfWeek: a.dayOfWeek,
       prs: prMap[a.name] || 0,
-      issues: issueMap[a.name] || 0,
+      issues:         issueCreatedMap[a.name]  || 0,
+      issuesAssigned: issueAssignedMap[a.name] || 0,
+      issuesResolved: issueResolvedMap[a.name] || 0,
+      avgResolutionHours: issueResCountMap[a.name]
+        ? Math.round(issueResTimeMap[a.name] / issueResCountMap[a.name])
+        : null,
     }
   }).sort((a, b) => b.commits - a.commits)
 }
@@ -238,6 +271,9 @@ function mergeWithCollaborators(activityList, allMembers) {
         dayOfWeek: [0,0,0,0,0,0,0],
         prs: 0,
         issues: 0,
+        issuesAssigned: 0,
+        issuesResolved: 0,
+        avgResolutionHours: null,
       })
     }
   })
@@ -304,8 +340,23 @@ export function useGitHubData() {
       const milestones     = milestonesResult.data
       const workflowRuns   = workflowRunsResult.data
       const reviewComments = reviewCommentsResult.data
-      const quality        = qualityResult.data
       const testFiles      = testFilesResult.data
+
+      // Post-process: framework installé mais zéro fichier de test réel → scoreItem "tests" à false
+      const quality = (() => {
+        const q = qualityResult.data
+        if (!q?.scoreItems) return q
+        const noRealTests = !testFiles?.hasRealTests
+        const scoreItems = q.scoreItems.map(item =>
+          item.key === 'tests' && item.ok && noRealTests
+            ? { ...item, ok: false, label: item.label + ' (aucun fichier .test/.spec trouvé)' }
+            : item
+        )
+        const totalWeight  = scoreItems.reduce((s, i) => s + i.weight, 0)
+        const earnedWeight = scoreItems.filter(i => i.ok).reduce((s, i) => s + i.weight, 0)
+        const score = Math.round((earnedWeight / totalWeight) * 100)
+        return { ...q, scoreItems, score, hasTests: noRealTests ? false : q.hasTests }
+      })()
 
       // Collect warnings — only for unexpected failures, not known API limitations
       const warnings = []

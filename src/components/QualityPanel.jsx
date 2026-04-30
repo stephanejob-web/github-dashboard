@@ -1,4 +1,4 @@
-import { ShieldCheck, CheckCircle, XCircle, FlaskConical, Wrench, Cpu, GitCommit } from 'lucide-react'
+import { ShieldCheck, CheckCircle, XCircle, FlaskConical, Wrench, Cpu, GitCommit, AlertTriangle } from 'lucide-react'
 
 function scoreGrade(score) {
   if (score >= 85) return { grade: 'A', color: '#4ade80', label: 'Excellent' }
@@ -63,7 +63,7 @@ function CheckRow({ ok, label, weight }) {
   )
 }
 
-export default function QualityPanel({ quality, devTestActivity = [] }) {
+export default function QualityPanel({ quality, devTestActivity = [], testFiles = null }) {
   if (!quality || !quality.scoreItems?.length) {
     return (
       <div className="glass" style={{ padding: '24px', borderRadius: 20, textAlign: 'center' }}>
@@ -91,6 +91,25 @@ export default function QualityPanel({ quality, devTestActivity = [] }) {
 
   const scriptsList = Object.entries(signals.pkgScripts || {}).slice(0, 6)
 
+  const testFileCount = testFiles?.count ?? null
+  const hasRealTests  = testFiles?.hasRealTests ?? null
+  const testExamples  = testFiles?.examples ?? []
+  const fakeTestSetup = testFramework && hasRealTests === false
+
+  const ecosystem  = signals.ecosystem ?? 'unknown'
+  const isJS       = ecosystem === 'javascript'
+
+  const ECOSYSTEM_LABEL = {
+    javascript: 'JavaScript / TypeScript', python: 'Python', go: 'Go',
+    ruby: 'Ruby', java: 'Java', csharp: 'C#', c: 'C', cpp: 'C++',
+    rust: 'Rust', php: 'PHP', unknown: 'Inconnu',
+  }
+  const ECOSYSTEM_COLOR = {
+    javascript: '#f7df1e', python: '#3572a5', go: '#00add8',
+    ruby: '#cc342d', java: '#b07219', csharp: '#178600',
+    c: '#555555', cpp: '#f34b7d', rust: '#dea584', php: '#4f5d95', unknown: '#4a5568',
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
@@ -100,9 +119,19 @@ export default function QualityPanel({ quality, devTestActivity = [] }) {
           <ScoreGauge score={score} />
 
           <div style={{ flex: 1, minWidth: 200 }}>
-            <p style={{ fontSize: 15, fontWeight: 800, color: '#e2e8f0', marginBottom: 6, letterSpacing: '-0.02em' }}>
-              Outillage & bonnes pratiques détectés
-            </p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+              <p style={{ fontSize: 15, fontWeight: 800, color: '#e2e8f0', letterSpacing: '-0.02em' }}>
+                Outillage & bonnes pratiques détectés
+              </p>
+              <span style={{
+                fontSize: 10, padding: '2px 10px', borderRadius: 99, fontWeight: 700,
+                background: `${ECOSYSTEM_COLOR[ecosystem]}20`,
+                color: ECOSYSTEM_COLOR[ecosystem],
+                border: `1px solid ${ECOSYSTEM_COLOR[ecosystem]}40`,
+              }}>
+                {ECOSYSTEM_LABEL[ecosystem]}
+              </span>
+            </div>
 
             {testFramework && (
               <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 12px', borderRadius: 99, marginBottom: 12,
@@ -119,16 +148,82 @@ export default function QualityPanel({ quality, devTestActivity = [] }) {
               </div>
             )}
 
+            {/* Compteur fichiers de test réels */}
+            {testFileCount !== null && (
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 12px', borderRadius: 99, marginBottom: 12, marginLeft: testFramework ? 8 : 0,
+                background: hasRealTests ? 'rgba(74,222,128,0.08)' : 'rgba(251,191,36,0.1)',
+                border: `1px solid ${hasRealTests ? 'rgba(74,222,128,0.2)' : 'rgba(251,191,36,0.3)'}` }}>
+                <FlaskConical size={11} color={hasRealTests ? '#4ade80' : '#fbbf24'} />
+                <span style={{ fontSize: 11, fontWeight: 700, color: hasRealTests ? '#4ade80' : '#fbbf24' }}>
+                  {testFileCount} fichier{testFileCount !== 1 ? 's' : ''} de test réel{testFileCount !== 1 ? 's' : ''}
+                </span>
+              </div>
+            )}
+
+            {/* Alerte : framework installé mais aucun fichier de test */}
+            {fakeTestSetup && (
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '10px 14px', borderRadius: 10, marginBottom: 12,
+                background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.3)' }}>
+                <AlertTriangle size={13} color="#fbbf24" style={{ flexShrink: 0, marginTop: 1 }} />
+                <div>
+                  <p style={{ fontSize: 12, fontWeight: 700, color: '#fbbf24', marginBottom: 2 }}>
+                    {testFramework} installé mais aucun fichier de test trouvé
+                  </p>
+                  <p style={{ fontSize: 11, color: '#92400e' }}>
+                    Le framework est configuré mais les développeurs n'ont pas écrit de tests. Score "Tests" retiré.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Exemples de fichiers trouvés */}
+            {testExamples.length > 0 && (
+              <div style={{ marginBottom: 8 }}>
+                {testExamples.slice(0, 3).map(p => (
+                  <span key={p} style={{ display: 'inline-block', fontSize: 10, fontFamily: 'monospace', padding: '2px 8px', borderRadius: 6, marginRight: 6, marginBottom: 4,
+                    background: 'rgba(74,222,128,0.07)', color: '#4ade80', border: '1px solid rgba(74,222,128,0.15)' }}>
+                    {p}
+                  </span>
+                ))}
+              </div>
+            )}
+
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {signals.prettier && <Tag color="#f472b6">Prettier</Tag>}
-              {signals.eslint && <Tag color="#818cf8">ESLint</Tag>}
-              {signals.typescript && <Tag color="#60a5fa">TypeScript</Tag>}
-              {signals.husky && <Tag color="#fb923c">Husky</Tag>}
-              {signals.commitlint && <Tag color="#a78bfa">Commitlint</Tag>}
-              {signals.lintStaged && <Tag color="#34d399">lint-staged</Tag>}
+              {/* Badges JS uniquement */}
+              {isJS && signals.prettierInstalled && <Tag color={signals.prettier ? '#f472b6' : '#6b7280'} dim={!signals.prettier}>Prettier{!signals.prettier ? ' ⚠' : ''}</Tag>}
+              {isJS && signals.eslintInstalled   && <Tag color={signals.eslint   ? '#818cf8' : '#6b7280'} dim={!signals.eslint}>ESLint{!signals.eslint ? ' ⚠' : ''}</Tag>}
+              {isJS && signals.tsInstalled       && <Tag color={signals.typescript ? '#60a5fa' : '#6b7280'} dim={!signals.typescript}>TypeScript{!signals.typescript ? ' ⚠' : ''}</Tag>}
+              {isJS && signals.huskyInstalled    && <Tag color={signals.husky    ? '#fb923c' : '#6b7280'} dim={!signals.husky}>Husky{!signals.husky ? ' ⚠' : ''}</Tag>}
+              {isJS && signals.commitlintInstalled && <Tag color={signals.commitlint ? '#a78bfa' : '#6b7280'} dim={!signals.commitlint}>Commitlint{!signals.commitlint ? ' ⚠' : ''}</Tag>}
+              {isJS && signals.lintStagedInstalled && <Tag color={signals.lintStaged ? '#34d399' : '#6b7280'} dim={!signals.lintStaged}>lint-staged{!signals.lintStaged ? ' ⚠' : ''}</Tag>}
               {signals.editorconfig && <Tag color="#94a3b8">.editorconfig</Tag>}
               {signals.hasWorkflows && <Tag color="#868cff">{signals.workflowCount} workflow{signals.workflowCount > 1 ? 's' : ''} CI</Tag>}
             </div>
+
+            {/* Avertissements JS uniquement */}
+            {isJS && (
+              (signals.eslintInstalled && !signals.eslint) ||
+              (signals.prettierInstalled && !signals.prettier) ||
+              (signals.tsInstalled && !signals.typescript) ||
+              (signals.huskyInstalled && !signals.husky) ||
+              (signals.commitlintInstalled && !signals.commitlint) ||
+              (signals.lintStagedInstalled && !signals.lintStaged)
+            ) && (
+              <div style={{ marginTop: 10, padding: '10px 14px', borderRadius: 10,
+                background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.2)' }}>
+                <p style={{ fontSize: 11, fontWeight: 700, color: '#fbbf24', marginBottom: 6 }}>
+                  ⚠ Outils installés mais non actifs
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                  {signals.eslintInstalled && !signals.eslint && <WarnLine>ESLint installé mais aucun script lint ni CI</WarnLine>}
+                  {signals.prettierInstalled && !signals.prettier && <WarnLine>Prettier installé mais aucun script format ni CI</WarnLine>}
+                  {signals.tsInstalled && !signals.typescript && <WarnLine>TypeScript sans strict:true ni vérification CI</WarnLine>}
+                  {signals.huskyInstalled && !signals.husky && <WarnLine>Husky installé mais hooks vides ou absents</WarnLine>}
+                  {signals.commitlintInstalled && !signals.commitlint && <WarnLine>Commitlint installé mais hook commit-msg non branché</WarnLine>}
+                  {signals.lintStagedInstalled && !signals.lintStaged && <WarnLine>lint-staged installé mais non appelé dans pre-commit</WarnLine>}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Barre de progression */}
@@ -242,11 +337,20 @@ export default function QualityPanel({ quality, devTestActivity = [] }) {
   )
 }
 
-function Tag({ children, color }) {
+function Tag({ children, color, dim = false }) {
   return (
     <span style={{
       fontSize: 10, padding: '3px 9px', borderRadius: 99, fontWeight: 700,
       background: `${color}15`, color, border: `1px solid ${color}35`,
+      opacity: dim ? 0.55 : 1,
     }}>{children}</span>
+  )
+}
+
+function WarnLine({ children }) {
+  return (
+    <p style={{ fontSize: 11, color: '#92400e', paddingLeft: 8, borderLeft: '2px solid rgba(251,191,36,0.3)' }}>
+      {children}
+    </p>
   )
 }

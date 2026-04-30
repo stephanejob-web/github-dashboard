@@ -352,7 +352,7 @@ export default function Dashboard({ data, owner, repo, onBack, token, onRefresh 
           {/* ── Qualité & bonnes pratiques ── */}
           <div style={{ marginBottom: 24 }}>
             <SectionHeader label="Qualité · Scrum Master" title="Normes & Bonnes pratiques" sub={quality ? `Score : ${quality.score}/100` : ''} />
-            <QualityPanel quality={quality} devTestActivity={devTestActivity} />
+            <QualityPanel quality={quality} devTestActivity={devTestActivity} testFiles={testFiles} />
           </div>
 
           {/* ── CI / GitHub Actions ── */}
