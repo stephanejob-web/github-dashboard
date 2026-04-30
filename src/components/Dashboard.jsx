@@ -23,6 +23,7 @@ import CIPanel from './CIPanel'
 import QualityPanel from './QualityPanel'
 import SecurityPanel from './SecurityPanel'
 import GGReportPanel from './GGReportPanel'
+import CVEPanel from './CVEPanel'
 import SMOverview from './SMOverview'
 import { clearCache } from '../api/github'
 import { useRef } from 'react'
@@ -277,7 +278,7 @@ export default function Dashboard({ data, owner, repo, onBack, token, onRefresh,
     prByMonth, prs, issues, languages, branches, branchAnalysis, prAnalysis, streak, mostActiveDay,
     daysSinceLastCommit, avgCommitsPerWeek, commitLint, commitLintByAuthor,
     milestones = [], prHealth, topReviewers = [], busFactor, busFactorList = [], labelDist = [], issuesAssignment, ci,
-    quality, testFiles, devTestActivity = [], security,
+    quality, testFiles, devTestActivity = [], security, osv,
   } = data
 
   const topContributor = contributors[0]
@@ -485,6 +486,7 @@ export default function Dashboard({ data, owner, repo, onBack, token, onRefresh,
             <SectionHeader label="Sécurité · Scrum Master" title="Analyse de sécurité" sub={security ? `Score : ${security.score}/100` : ''} />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
               <SecurityPanel security={security} owner={owner} repo={repo} token={token} ggToken={ggToken} onSaveGGToken={onSaveGGToken} />
+              <CVEPanel osv={osv} />
               {ggToken && <GGReportPanel owner={owner} repo={repo} ggToken={ggToken} />}
             </div>
           </div>

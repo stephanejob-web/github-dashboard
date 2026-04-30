@@ -845,3 +845,209 @@ export async function fetchSecurityScan(owner, repo, token, ggToken) {
     ggScanned,
   }
 }
+
+// ── OSV.dev vulnerability scan ────────────────────────────────────────────────
+
+const OSV_BASE = 'https://api.osv.dev/v1'
+
+function cleanVersion(v) {
+  if (!v || typeof v !== 'string') return null
+  const clean = v.replace(/^[\^~>=<! ]+/, '').split(' ')[0].split(',')[0].trim()
+  return /^\d/.test(clean) ? clean : null
+}
+
+function parseDeps(text, ecosystem) {
+  const deps = []
+  if (ecosystem === 'npm') {
+    try {
+      const pkg = JSON.parse(text)
+      const all = { ...pkg.dependencies, ...pkg.devDependencies }
+      for (const [name, version] of Object.entries(all)) {
+        const v = cleanVersion(version)
+        if (v) deps.push({ name, version: v, ecosystem: 'npm' })
+      }
+    } catch {}
+  } else if (ecosystem === 'PyPI') {
+    for (const line of text.split('\n')) {
+      const clean = line.trim().split('#')[0].trim()
+      if (!clean) continue
+      const m = clean.match(/^([A-Za-z0-9_.-]+)[>=<!~^]+(.+)$/)
+      if (m) {
+        const v = cleanVersion(m[2])
+        if (v) deps.push({ name: m[1], version: v, ecosystem: 'PyPI' })
+      }
+    }
+  } else if (ecosystem === 'Go') {
+    for (const line of text.split('\n')) {
+      const m = line.trim().match(/^\s*([^\s]+)\s+v([^\s]+)/)
+      if (m) deps.push({ name: m[1], version: m[2], ecosystem: 'Go' })
+    }
+  } else if (ecosystem === 'crates.io') {
+    for (const line of text.split('\n')) {
+      const m = line.match(/^([a-z0-9_-]+)\s*=\s*"([^"]+)"/)
+      if (m) {
+        const v = cleanVersion(m[2])
+        if (v) deps.push({ name: m[1], version: v, ecosystem: 'crates.io' })
+      }
+    }
+  }
+  return deps
+}
+
+function cvssScore(vuln) {
+  for (const s of vuln.severity ?? []) {
+    if (s.score?.startsWith('CVSS:')) {
+      const m = s.score.match(/\/AV:[^/]+.*?\/(\d+\.\d+)$/)
+      if (m) return parseFloat(m[1])
+    }
+  }
+  const sev = vuln.database_specific?.severity ?? ''
+  if (sev === 'CRITICAL') return 9.5
+  if (sev === 'HIGH') return 7.5
+  if (sev === 'MODERATE' || sev === 'MEDIUM') return 5.0
+  if (sev === 'LOW') return 2.5
+  return 0
+}
+
+function vulnSeverity(vuln) {
+  const score = cvssScore(vuln)
+  if (score >= 9) return 'critical'
+  if (score >= 7) return 'high'
+  if (score >= 4) return 'medium'
+  return 'low'
+}
+
+function fixedVersion(vuln, pkgName) {
+  for (const aff of vuln.affected ?? []) {
+    if (aff.package?.name?.toLowerCase() !== pkgName.toLowerCase()) continue
+    for (const range of aff.ranges ?? []) {
+      for (const ev of range.events ?? []) {
+        if (ev.fixed) return ev.fixed
+      }
+    }
+    if (aff.database_specific?.last_known_affected_version_range) {
+      return aff.database_specific.last_known_affected_version_range
+    }
+  }
+  return null
+}
+
+export async function fetchOSVScan(owner, repo, token) {
+  // Noms de fichiers manifeste recherchés dans tout l'arbre du repo
+  const MANIFEST_NAMES = {
+    'package.json':      'npm',
+    'requirements.txt':  'PyPI',
+    'go.mod':            'Go',
+    'Cargo.toml':        'crates.io',
+  }
+  // Dossiers à exclure
+  const EXCLUDE_DIRS = /node_modules|vendor|\.git|dist|build|__pycache__|\.venv|venv/i
+
+  // Récupérer l'arbre complet du repo
+  const treeRaw = await safe(
+    get(`${BASE}/repos/${owner}/${repo}/git/trees/HEAD?recursive=1`, token), null
+  )
+  const allFiles = (treeRaw.data?.tree ?? [])
+    .filter(f => f.type === 'blob' && !EXCLUDE_DIRS.test(f.path))
+
+  // Trouver tous les manifestes (max 8 fichiers pour éviter trop de requêtes)
+  const found = []
+  for (const [name, ecosystem] of Object.entries(MANIFEST_NAMES)) {
+    const matches = allFiles
+      .filter(f => f.path.endsWith('/' + name) || f.path === name)
+      .slice(0, 3) // max 3 par type (monorepos)
+    for (const f of matches) {
+      const text = await fetchFileText(owner, repo, f.path, token)
+      if (text) found.push({ path: f.path, ecosystem, text })
+    }
+    if (found.length >= 8) break
+  }
+
+  const manifests = found
+  if (manifests.length === 0) return { vulns: [], scanned: [], depsChecked: 0 }
+
+  // Parse all deps
+  const allDeps = []
+  for (const m of manifests) {
+    allDeps.push(...parseDeps(m.text, m.ecosystem))
+  }
+
+  // Deduplicate, limit to 120 deps
+  const seen = new Set()
+  const deps = allDeps.filter(d => {
+    const k = `${d.ecosystem}:${d.name}:${d.version}`
+    if (seen.has(k)) return false
+    seen.add(k)
+    return true
+  }).slice(0, 120)
+
+  if (deps.length === 0) return { vulns: [], scanned: manifests.map(m => m.path), ecosystem: manifests[0].ecosystem }
+
+  // Step 1 — querybatch : récupère les IDs de vulns pour chaque dep
+  const vulnHits = [] // { id, dep }
+  for (let i = 0; i < deps.length; i += 50) {
+    const chunk = deps.slice(i, i + 50)
+    try {
+      const res = await fetch(`${OSV_BASE}/querybatch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          queries: chunk.map(d => ({
+            package: { name: d.name, ecosystem: d.ecosystem },
+            version: d.version,
+          })),
+        }),
+      })
+      if (!res.ok) continue
+      const data = await res.json()
+      ;(data.results ?? []).forEach((r, j) => {
+        const dep = chunk[j]
+        for (const v of r.vulns ?? []) {
+          vulnHits.push({ id: v.id, dep })
+        }
+      })
+    } catch {}
+  }
+
+  // Deduplicate vuln IDs (même CVE peut toucher plusieurs deps)
+  const idSeen = new Set()
+  const uniqueHits = vulnHits.filter(h => {
+    if (idSeen.has(h.id)) return false
+    idSeen.add(h.id)
+    return true
+  }).slice(0, 40) // max 40 fetch individuels
+
+  // Step 2 — fetch détails complets pour chaque vuln (summary, severity, fix)
+  const vulns = await Promise.all(
+    uniqueHits.map(async ({ id, dep }) => {
+      try {
+        const res = await fetch(`${OSV_BASE}/vulns/${id}`)
+        if (!res.ok) return null
+        const v = await res.json()
+        return {
+          id: v.id,
+          summary: v.summary ?? v.details?.slice(0, 150) ?? 'Vulnérabilité',
+          severity: vulnSeverity(v),
+          cvssScore: cvssScore(v),
+          package: dep.name,
+          version: dep.version,
+          ecosystem: dep.ecosystem,
+          fixedIn: fixedVersion(v, dep.name),
+          url: `https://osv.dev/vulnerability/${v.id}`,
+          aliases: v.aliases ?? [],
+        }
+      } catch { return null }
+    })
+  )
+
+  const uniqueVulns = vulns.filter(Boolean)
+  uniqueVulns.sort((a, b) => b.cvssScore - a.cvssScore)
+
+  return {
+    vulns: uniqueVulns,
+    scanned: manifests.map(m => m.path),
+    depsChecked: deps.length,
+    criticalCount: uniqueVulns.filter(v => v.severity === 'critical').length,
+    highCount:     uniqueVulns.filter(v => v.severity === 'high').length,
+  }
+}

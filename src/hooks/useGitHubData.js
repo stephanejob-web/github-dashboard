@@ -16,6 +16,7 @@ import {
   fetchQualitySignals,
   fetchTestFiles,
   fetchSecurityScan,
+  fetchOSVScan,
   safe,
 } from '../api/github'
 
@@ -315,6 +316,7 @@ export function useGitHubData() {
         qualityResult,
         testFilesResult,
         securityResult,
+        osvResult,
       ] = await Promise.all([
         safe(fetchContributors(owner, repo, token), []),
         safe(fetchCollaborators(owner, repo, token), []),
@@ -329,6 +331,7 @@ export function useGitHubData() {
         safe(fetchQualitySignals(owner, repo, token), { signals: {}, scoreItems: [], score: 0, hasTests: false }),
         safe(fetchTestFiles(owner, repo, token), { count: 0, hasRealTests: false, examples: [] }),
         safe(fetchSecurityScan(owner, repo, token, ggToken), { issues: [], criticalCount: 0, highCount: 0, score: 100 }),
+        safe(fetchOSVScan(owner, repo, token), { vulns: [], scanned: [], depsChecked: 0 }),
       ])
 
       if (loadId !== loadIdRef.current) return
@@ -345,6 +348,7 @@ export function useGitHubData() {
       const reviewComments = reviewCommentsResult.data
       const testFiles      = testFilesResult.data
       const security       = securityResult.data
+      const osv            = osvResult.data
 
       // Post-process: framework installé mais zéro fichier de test réel → scoreItem "tests" à false
       const quality = (() => {
@@ -598,6 +602,7 @@ export function useGitHubData() {
         testFiles,
         devTestActivity,
         security,
+        osv,
       })
     } catch (e) {
       if (loadId !== loadIdRef.current) return

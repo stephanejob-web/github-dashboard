@@ -150,10 +150,10 @@ export default function GGReportPanel({ owner, repo, ggToken }) {
             {isScopeError && (
               <>
                 <p style={{ fontSize: 12, color: '#718096', lineHeight: 1.6, marginBottom: 8 }}>
-                  Ton token GG a le scope <code style={{ background: 'rgba(255,255,255,0.06)', padding: '1px 6px', borderRadius: 4, color: '#f97316' }}>scan</code> — suffisant pour le scan de fichiers, mais pas pour l'API incidents.
+                  L'API incidents GitGuardian est réservée aux plans <strong style={{ color: '#e2e8f0' }}>Team / Enterprise</strong> (payants). Le compte gratuit donne uniquement accès au scan de fichiers.
                 </p>
                 <p style={{ fontSize: 11, color: '#4a5568', lineHeight: 1.6 }}>
-                  Pour accéder aux incidents : <strong style={{ color: '#e2e8f0' }}>dashboard.gitguardian.com</strong> → API → Personal access tokens → créer un token avec le scope <code style={{ background: 'rgba(255,255,255,0.06)', padding: '1px 5px', borderRadius: 4, color: '#a78bfa', fontSize: 10 }}>incidents:read</code>.
+                  Le scan de secrets reste actif dans le panel ci-dessus — il analyse les fichiers du repo directement via l'API GG scan.
                 </p>
               </>
             )}
