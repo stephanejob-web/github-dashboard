@@ -490,6 +490,8 @@ export async function fetchGGReport(owner, repo, ggToken) {
   try {
     // Verify token + get quota
     const meRes = await fetch(`${GG_BASE}/v1/health`, { headers })
+    const meText = await meRes.text()
+    if (meText.trim().startsWith('<')) return { error: 'proxy_error' }
     if (!meRes.ok) return { error: meRes.status === 401 ? 'Token invalide' : `Erreur ${meRes.status}` }
 
     // Fetch incidents (all pages up to 100)

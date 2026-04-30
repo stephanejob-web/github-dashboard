@@ -11,6 +11,9 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: path => path.replace(/^\/gg-api/, ''),
         secure: true,
+        configure: (proxy) => {
+          proxy.on('error', (err) => console.error('[GG proxy]', err))
+        },
       },
     },
   },
